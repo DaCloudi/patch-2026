@@ -1,0 +1,12 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 110
+BreakBeforeBraces: Attach
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: Empty
+SortIncludes: Never
+InsertBraces: true
+PointerAlignment: Left
+ReferenceAlignment: Left
+NamespaceIndentation: All
+FixNamespaceComments: false
