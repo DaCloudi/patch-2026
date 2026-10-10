@@ -219,6 +219,30 @@ Profile action `0x2456CC0` has a separate inlined refusal: replace only None/nul
 relationship while retaining pending/accept/cancel/unfriend actions. Return the
 actual native promise; never manufacture a successful friendship.
 
+FriendImportModel.AddSelectedFriends (`0x26EAE90`) is shared by the sign-up/NUX
+and menu controllers. It only constructs a disabled dialog and never reaches the
+request wrapper. `selectedAccounts +0xD8` is List<int> (items +0x10, count +0x18),
+as verified in its constructor and toggle body. Import dispatches selected IDs
+through the native request method with FailedPlatformFriendImport source 1,
+retaining the acceptance step. It does not use the direct bulk-add method.
+Native JYBCNXVQTDI (`0x9DA2470`) joins the request promises; inherited Then/Error
+(`0x9DA3190`/`0x9DA3020`) report actual completion. Callback delegates retain the
+model and use the existing Action/Action<string> constructors and signatures;
+only their privately allocated code-pointer fields +0x10/+0x18 are replaced.
+Success deselects dispatched accounts and invokes OnFriendsImported, which is
+DQCNOGDGYBL<int> (`0x54E7FA0`) with the successful count. Its inflated MethodInfo
+must be passed because Invoke reads the generic context. Failure preserves native
+error feedback (`0x26EC1D0`) and does not fire the completion event. Both use the
+native loading cleanup (`0x26EC320`). Import testing needs both entry points,
+multiple selections, server rejection and sign-up progression after success.
+On 2026-10-10 the maintainer confirmed a successful menu import. The Steam
+client log recorded one selected request dispatched and one completed, with no
+import fault. This exercised the initial import build. A subsequent metadata
+check corrected the delegate type/method slots to the exact Action and
+Action<string> callbacks and added pre-dispatch signature checks; that corrected
+build was installed afterward and requires another gameplay check. Sign-up,
+multiple selections and server rejection remain unverified for this change.
+
 Handshake gesture 4 is also inlined in `0x1E30980`, bypassing request `0x1E2E3C0`.
 Both patched paths call receive handler `0x1E2DD90`, preserving ownership, live-hand
 checks, midpoint, player identity, roles and communication restrictions. Its

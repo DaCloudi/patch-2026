@@ -8,6 +8,8 @@
 #include <string>
 #include <algorithm>
 #include <vector>
+#include <map>
+#include <mutex>
 #include <intrin.h>
 #include "../../Utils/DesktopCapture.h"
 #include "../../Utils/Logging.h"
@@ -77,6 +79,7 @@ namespace RR::Patches {
     static void* byteArrayClass = nullptr;
     static void (*resolveCaptureType)(void**) = nullptr;
     static void (*initializeClass)(void*) = nullptr;
+    static void (*writeBarrier)(void**, void*) = nullptr;
     static void* (*sendFriendRequest)(int32_t, int32_t, void*) = nullptr;
     static void* (*friendRequestOriginal)(void*, int32_t, int32_t, bool, void*) = nullptr;
     static void* FriendRequest(void* instance, int32_t playerId, int32_t source, bool showFeedback,
@@ -102,6 +105,207 @@ namespace RR::Patches {
             Log("[Friends] native request fault; retaining original failure response");
         }
         return friendRequestOriginal(instance, playerId, source, showFeedback, method);
+    }
+    static void (*importSelectedOriginal)(void*, void*) = nullptr;
+    static void (*importCleanup)(void*, void*) = nullptr;
+    static void (*importError)(void*, void*, void*) = nullptr;
+    static bool (*importIsSelected)(void*, int32_t, void*) = nullptr;
+    static void (*importToggleSelected)(void*, int32_t, void*) = nullptr;
+    static void (*importEventInvoke)(void*, int32_t, void*) = nullptr;
+    static void (*importActionConstructor)(void*, void*, void*, void*) = nullptr;
+    static void (*importErrorActionConstructor)(void*, void*, void*, void*) = nullptr;
+    static void (*allPromiseConstructor)(void*, void*, void*) = nullptr;
+    static void* (*promiseThen)(void*, void*, void*) = nullptr;
+    static void* (*promiseError)(void*, void*, void*) = nullptr;
+    static void* (*classMethods)(void*, void**) = nullptr;
+    static const char* (*methodName)(void*) = nullptr;
+    static std::mutex importLock;
+    // The native promise delegates retain the model. This map contains only
+    // the selected IDs/count snapshot; it owns no unrooted managed references.
+    static std::map<void*, std::vector<int32_t>> pendingImports;
+
+    static void* ImportMetadata(uintptr_t offset) {
+        auto slot = reinterpret_cast<void**>(game + offset);
+        resolveCaptureType(slot);
+        return *slot;
+    }
+    static void ImportSucceededWork(void* model) {
+        std::vector<int32_t> ids;
+        {
+            std::lock_guard<std::mutex> guard(importLock);
+            auto pending = pendingImports.find(model);
+            if (pending == pendingImports.end()) {
+                return;
+            }
+            ids = std::move(pending->second);
+            pendingImports.erase(pending);
+        }
+        // Remove only the dispatched selections, retaining any newly selected
+        // accounts. The original toggle emits the model's change notification.
+        for (auto id : ids) {
+            if (importIsSelected(model, id, nullptr)) {
+                importToggleSelected(model, id, nullptr);
+            }
+        }
+        importCleanup(model, nullptr);
+        auto klass = ImportMetadata(RR::Methods::Metadata::FriendImportTypeSlot);
+        initializeClass(klass);
+        auto fields = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(klass) +
+                                                RR::Offsets::FriendImport::StaticFields);
+        auto event = *reinterpret_cast<void**>(fields);
+        void* iterator = nullptr;
+        void* invoke = nullptr;
+        while (auto candidate = classMethods(objectClass(event), &iterator)) {
+            if (!strcmp(methodName(candidate), "Invoke") &&
+                *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(candidate) +
+                                              RR::Offsets::MethodInfo::Body) ==
+                    game + RR::Methods::Friends::ImportEventInvoke) {
+                invoke = candidate;
+                break;
+            }
+        }
+        if (!invoke) {
+            Log("[Friends] import completed but completion event method unavailable");
+            return;
+        }
+        Log("[Friends] import requests completed count=%zu", ids.size());
+        // OnFriendsImported is DQCNOGDGYBL<int>, not System.Action. Its
+        // inflated Invoke reads MethodInfo's generic context, so retain it.
+        importEventInvoke(event, static_cast<int32_t>(ids.size()), invoke);
+    }
+    static void ImportSucceeded(void* model, void*) {
+        __try {
+            ImportSucceededWork(model);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            Log("[Friends] import completion fault");
+        }
+    }
+    static void ImportFailedWork(void* model, void* error) {
+        {
+            std::lock_guard<std::mutex> guard(importLock);
+            pendingImports.erase(model);
+        }
+        Log("[Friends] import request failed; retaining native error feedback");
+        importError(model, error, nullptr);
+        importCleanup(model, nullptr);
+    }
+    static void ImportFailed(void* model, void* error, void*) {
+        __try {
+            ImportFailedWork(model, error);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            Log("[Friends] import error feedback fault");
+        }
+    }
+    static void* ImportCallback(void* model, bool failure) {
+        auto klass = ImportMetadata(failure ? RR::Methods::Metadata::ImportErrorActionTypeSlot
+                                            : RR::Methods::Metadata::ImportActionTypeSlot);
+        auto method = ImportMetadata(failure ? RR::Methods::Metadata::ImportErrorMethodSlot
+                                             : RR::Methods::Metadata::ImportActionMethodSlot);
+        auto methodAddress = reinterpret_cast<uintptr_t>(method);
+        if (!method ||
+            *reinterpret_cast<uintptr_t*>(methodAddress + RR::Offsets::MethodInfo::Body) !=
+                game + (failure ? RR::Methods::Friends::ImportError : RR::Methods::Friends::ImportCleanup) ||
+            *reinterpret_cast<uint8_t*>(methodAddress + RR::Offsets::MethodInfo::ParameterCount) !=
+                (failure ? 1 : 0)) {
+            Log("[Friends] import callback signature unavailable");
+            return nullptr;
+        }
+        auto action = objectNew(klass);
+        if (!action) {
+            return nullptr;
+        }
+        // Native constructors keep the original Action/Action<string> ABI,
+        // target and GC write barrier. Only this newly allocated delegate's
+        // two code pointers are replaced; shared metadata remains untouched.
+        if (failure) {
+            importErrorActionConstructor(action, model, method, nullptr);
+        } else {
+            importActionConstructor(action, model, method, nullptr);
+        }
+        auto callback =
+            failure ? reinterpret_cast<void*>(ImportFailed) : reinterpret_cast<void*>(ImportSucceeded);
+        auto address = reinterpret_cast<uintptr_t>(action);
+        *reinterpret_cast<void**>(address + RR::Offsets::Delegate::MethodPointer) = callback;
+        *reinterpret_cast<void**>(address + RR::Offsets::Delegate::InvokeImplementation) = callback;
+        return action;
+    }
+    static bool ImportSelectedWork(void* model, bool* dispatched) {
+        auto selected = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(model) +
+                                                      RR::Offsets::FriendImport::SelectedAccounts);
+        if (!selected) {
+            return false;
+        }
+        auto items = *reinterpret_cast<uintptr_t*>(selected + RR::Offsets::IntList::Items);
+        auto count = *reinterpret_cast<int32_t*>(selected + RR::Offsets::IntList::Count);
+        if (!items || count <= 0 ||
+            static_cast<size_t>(count) >
+                *reinterpret_cast<size_t*>(items + RR::Offsets::ManagedArray::Length)) {
+            return false;
+        }
+        auto first = reinterpret_cast<int32_t*>(items + RR::Offsets::ManagedArray::Data);
+        std::vector<int32_t> ids(first, first + count);
+        if (std::any_of(ids.begin(), ids.end(), [](int32_t id) { return id <= 0; })) {
+            return false;
+        }
+        auto success = ImportCallback(model, false);
+        auto failure = ImportCallback(model, true);
+        auto arrayType = ImportMetadata(RR::Methods::Metadata::PromiseArrayTypeSlot);
+        auto allType = ImportMetadata(RR::Methods::Metadata::AllPromiseTypeSlot);
+        auto promises = byteArrayNew(arrayType, ids.size());
+        auto all = objectNew(allType);
+        if (!success || !failure || !promises || !all) {
+            return false;
+        }
+        auto relationships = ImportMetadata(RR::Methods::Metadata::RelationshipsTypeSlot);
+        initializeClass(relationships);
+        {
+            std::lock_guard<std::mutex> guard(importLock);
+            if (!pendingImports.emplace(model, ids).second) {
+                LogVerbose("[Friends] import already pending");
+                return true;
+            }
+        }
+        *dispatched = true;
+        Log("[Friends] import dispatching selected requests count=%zu", ids.size());
+        for (size_t i = 0; i < ids.size(); ++i) {
+            // FriendRequestSource.FailedPlatformFriendImport = 1. Use normal
+            // requests rather than the direct bulk-add endpoint, which grants
+            // friendship without an acceptance step. Cache updates stay native.
+            auto request = sendFriendRequest(ids[i], 1, nullptr);
+            if (!request) {
+                ImportFailedWork(model, stringNew("Unable to send imported friend requests."));
+                return true;
+            }
+            auto field = reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(promises) +
+                                                  RR::Offsets::ManagedArray::Data + i * sizeof(void*));
+            *field = request;
+            writeBarrier(field, request);
+        }
+        // JYBCNXVQTDI joins NXPIPFBMDQY[]. Its inherited MRDAKWBRKMV.Then
+        // runs only when every real request succeeds; Error keeps the native
+        // import feedback. Both retain model targets until their callbacks run.
+        allPromiseConstructor(all, promises, nullptr);
+        promiseError(all, failure, nullptr);
+        promiseThen(all, success, nullptr);
+        return true;
+    }
+    static void ImportSelectedFriends(void* model, void* method) {
+        // Both the NUX/sign-up and menu controllers use this FriendImportModel
+        // action. 26EAE90 ignores selectedAccounts and only constructs the
+        // disabled dialog (26EAF5D/26EB014), never calling RequestWrapper.
+        bool dispatched = false;
+        __try {
+            if (model && ImportSelectedWork(model, &dispatched)) {
+                return;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            Log("[Friends] import action fault dispatched=%d", dispatched);
+            if (dispatched) {
+                ImportFailed(model, stringNew("Unable to complete imported friend requests."), nullptr);
+                return;
+            }
+        }
+        importSelectedOriginal(model, method);
     }
     static void (*toggleRelationshipOriginal)(void*, void*) = nullptr;
     static void (*gestureFriendOriginal)(void*, void*, void*, bool, void*) = nullptr;
@@ -373,7 +577,6 @@ namespace RR::Patches {
         transportFailureOriginal(instance, method);
     }
     static void (*connectOriginal)(void*, void*) = nullptr;
-    static void (*writeBarrier)(void**, void*) = nullptr;
     // Unboxed MoveNext body: targetRoomInstance at +0x30; DTO voice address at +0x40.
     // The configured endpoint affects only this process, never matchmaking.
     static void ConnectRoom(void* state, void* method) {
@@ -657,9 +860,37 @@ namespace RR::Patches {
             Gate(reinterpret_cast<void*>(game + RR::Methods::Friends::TransformPosition)));
         gestureNetworkPlayer = reinterpret_cast<decltype(gestureNetworkPlayer)>(
             Gate(reinterpret_cast<void*>(game + RR::Methods::Friends::NetworkPlayer)));
+        classMethods = reinterpret_cast<decltype(classMethods)>(Api(124));
+        methodName = reinterpret_cast<decltype(methodName)>(Api(110));
+        importCleanup = reinterpret_cast<decltype(importCleanup)>(
+            Gate(reinterpret_cast<void*>(game + RR::Methods::Friends::ImportCleanup)));
+        importError = reinterpret_cast<decltype(importError)>(
+            Gate(reinterpret_cast<void*>(game + RR::Methods::Friends::ImportError)));
+        importIsSelected = reinterpret_cast<decltype(importIsSelected)>(
+            Gate(reinterpret_cast<void*>(game + RR::Methods::Friends::ImportIsSelected)));
+        importToggleSelected = reinterpret_cast<decltype(importToggleSelected)>(
+            Gate(reinterpret_cast<void*>(game + RR::Methods::Friends::ImportToggleSelected)));
+        importEventInvoke = reinterpret_cast<decltype(importEventInvoke)>(
+            Gate(reinterpret_cast<void*>(game + RR::Methods::Friends::ImportEventInvoke)));
+        importActionConstructor = reinterpret_cast<decltype(importActionConstructor)>(
+            Gate(reinterpret_cast<void*>(game + RR::Methods::Friends::ActionConstructor)));
+        importErrorActionConstructor = reinterpret_cast<decltype(importErrorActionConstructor)>(
+            Gate(reinterpret_cast<void*>(game + RR::Methods::Friends::ErrorActionConstructor)));
+        allPromiseConstructor = reinterpret_cast<decltype(allPromiseConstructor)>(
+            Gate(reinterpret_cast<void*>(game + RR::Methods::Friends::AllPromiseConstructor)));
+        promiseThen = reinterpret_cast<decltype(promiseThen)>(
+            Gate(reinterpret_cast<void*>(game + RR::Methods::Friends::PromiseThen)));
+        promiseError = reinterpret_cast<decltype(promiseError)>(
+            Gate(reinterpret_cast<void*>(game + RR::Methods::Friends::PromiseError)));
         if (!resolveCaptureType || !initializeClass || !sendFriendRequest || !receiveGestureFriend ||
             !gestureOwnedLocally || !gestureObjectExists || !gestureHandTransform ||
-            !gestureTransformPosition || !gestureNetworkPlayer ||
+            !gestureTransformPosition || !gestureNetworkPlayer || !byteArrayNew || !classMethods ||
+            !methodName || !importCleanup || !importError || !importIsSelected || !importToggleSelected ||
+            !importEventInvoke || !importActionConstructor || !importErrorActionConstructor ||
+            !allPromiseConstructor || !promiseThen || !promiseError ||
+            !Hook(RR::Methods::Friends::ImportSelected, reinterpret_cast<void*>(ImportSelectedFriends),
+                  reinterpret_cast<void**>(&importSelectedOriginal),
+                  "FriendImportModel.NativeSelectedRequests") ||
             !Hook(RR::Methods::Friends::RequestWrapper, reinterpret_cast<void*>(FriendRequest),
                   reinterpret_cast<void**>(&friendRequestOriginal), "Relationships.NativeFriendRequests") ||
             !Hook(RR::Methods::Friends::ToggleRelationship, reinterpret_cast<void*>(ToggleRelationship),

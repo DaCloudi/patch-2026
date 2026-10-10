@@ -28,6 +28,13 @@ namespace RR::Methods::Metadata {
     // them on the appropriate managed task before class initialization/allocation.
     inline constexpr uintptr_t RelationshipsTypeSlot = 0xFC81278;
     inline constexpr uintptr_t ByteArrayTypeSlot = 0xFCCC8F0;
+    inline constexpr uintptr_t FriendImportTypeSlot = 0xFCF4A50;
+    inline constexpr uintptr_t PromiseArrayTypeSlot = 0xFD14970;
+    inline constexpr uintptr_t AllPromiseTypeSlot = 0xFCE6A38;
+    inline constexpr uintptr_t ImportActionTypeSlot = 0xFDDA050;
+    inline constexpr uintptr_t ImportActionMethodSlot = 0xFC1F310;
+    inline constexpr uintptr_t ImportErrorActionTypeSlot = 0xFCAEAF8;
+    inline constexpr uintptr_t ImportErrorMethodSlot = 0xFC1EFC0;
 }
 
 namespace RR::Methods::Uri {
@@ -47,6 +54,17 @@ namespace RR::Methods::Friends {
     inline constexpr uintptr_t HandTransform = 0x1CC6C20;
     inline constexpr uintptr_t TransformPosition = 0xB43BEC0;
     inline constexpr uintptr_t NetworkPlayer = 0x19FEC20;
+    inline constexpr uintptr_t ImportSelected = 0x26EAE90;
+    inline constexpr uintptr_t ImportCleanup = 0x26EC320;
+    inline constexpr uintptr_t ImportError = 0x26EC1D0;
+    inline constexpr uintptr_t ImportIsSelected = 0x26EB5B0;
+    inline constexpr uintptr_t ImportToggleSelected = 0x26EBCB0;
+    inline constexpr uintptr_t ImportEventInvoke = 0x54E7FA0;
+    inline constexpr uintptr_t ActionConstructor = 0x148B9E0;
+    inline constexpr uintptr_t ErrorActionConstructor = 0x10E7D50;
+    inline constexpr uintptr_t AllPromiseConstructor = 0x9DA2470;
+    inline constexpr uintptr_t PromiseThen = 0x9DA3190;
+    inline constexpr uintptr_t PromiseError = 0x9DA3020;
 }
 
 namespace RR::Methods::DesktopCapture {

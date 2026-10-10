@@ -17,6 +17,31 @@ namespace RR::Offsets::Relationship {
     inline constexpr uintptr_t Type = 0x14;
 }
 
+namespace RR::Offsets::FriendImport {
+    inline constexpr uintptr_t SelectedAccounts = 0xD8;
+    inline constexpr uintptr_t StaticFields = 0x20;
+}
+
+namespace RR::Offsets::IntList {
+    inline constexpr uintptr_t Items = 0x10;
+    inline constexpr uintptr_t Count = 0x18;
+}
+
+namespace RR::Offsets::ManagedArray {
+    inline constexpr uintptr_t Length = 0x18;
+    inline constexpr uintptr_t Data = 0x20;
+}
+
+namespace RR::Offsets::Delegate {
+    inline constexpr uintptr_t MethodPointer = 0x10;
+    inline constexpr uintptr_t InvokeImplementation = 0x18;
+}
+
+namespace RR::Offsets::MethodInfo {
+    inline constexpr uintptr_t Body = 0x58;
+    inline constexpr uintptr_t ParameterCount = 0x21;
+}
+
 namespace RR::Offsets::ScreenShare {
     inline constexpr uintptr_t PrimaryPreset = 0x80;
     inline constexpr uintptr_t SecondaryPreset = 0x88;
