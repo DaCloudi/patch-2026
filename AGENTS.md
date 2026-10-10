@@ -198,6 +198,9 @@ unsupported. Blank transport ID keeps matchmaking's server ID. Remote overrides
 require RSA public XML with only Modulus/Exponent; loopback may retain the client's
 key. Private RSA fields belong on the server and are rejected even when other
 transport settings are absent.
+Public-key replacement is independent of the address override: a configured key
+with blank `TachyonHost` preserves matchmaking's endpoint and server ID. This path
+is under local development testing; prior release validation does not cover it.
 
 Environment overrides `PATCH26_TACHYON_ENDPOINT` and `PATCH26_TACHYON_PUBLIC_KEY`
 follow the INI. Any local tooling that sets them must pass the same environment

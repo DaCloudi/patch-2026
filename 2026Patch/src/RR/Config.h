@@ -116,8 +116,8 @@ namespace RR::Config {
                 error = "A remote TachyonHost requires VoiceKeyXml or a public key file override.";
                 return false;
             }
-        } else if (!settings.voiceKeyXml.empty() || !settings.tachyonServerId.empty()) {
-            error = "TachyonHost is required when configuring a Tachyon key or server ID.";
+        } else if (!settings.tachyonServerId.empty()) {
+            error = "TachyonHost is required when configuring a Tachyon server ID.";
             return false;
         }
         return true;

@@ -564,7 +564,7 @@ namespace RR::Patches {
     static void TransportConnected(void* instance, uint64_t clientId, void* method) {
         connectedOriginal(instance, clientId, method);
         Log("[Networking] Tachyon room transport connected; client=%llu endpoint=%s", clientId,
-            tachyonEndpoint.c_str());
+            tachyonEndpoint.empty() ? "matchmaking" : tachyonEndpoint.c_str());
     }
     static void (*disconnectedOriginal)(void*, uint64_t, void*) = nullptr;
     static void TransportDisconnected(void* instance, uint64_t clientId, void* method) {
@@ -998,13 +998,16 @@ namespace RR::Patches {
                 tachyonEndpoint = std::string(numeric) + ":" + port;
                 Log("[Networking] resolved %s to %s", host.c_str(), numeric);
             }
-            if (!tachyonPublicKey.empty()) {
-                if (!Hook(RR::Methods::Tachyon::Constructor, reinterpret_cast<void*>(TachyonCtor),
-                          reinterpret_cast<void**>(&tachyonCtorOriginal), "Tachyon.ctor.ConfiguredKey")) {
-                    MH_Uninitialize();
-                    return 9;
-                }
+        }
+        // Key replacement can accompany matchmaking's address without overriding it.
+        if (!tachyonPublicKey.empty()) {
+            if (!Hook(RR::Methods::Tachyon::Constructor, reinterpret_cast<void*>(TachyonCtor),
+                      reinterpret_cast<void**>(&tachyonCtorOriginal), "Tachyon.ctor.ConfiguredKey")) {
+                MH_Uninitialize();
+                return 9;
             }
+        }
+        if (!tachyonEndpoint.empty() || !tachyonPublicKey.empty()) {
             if (!writeBarrier ||
                 !Hook(RR::Methods::Tachyon::ConnectRoom, reinterpret_cast<void*>(ConnectRoom),
                       reinterpret_cast<void**>(&connectOriginal), "Tachyon.ConnectRoom.MoveNext") ||
@@ -1024,9 +1027,10 @@ namespace RR::Patches {
         auto result = MH_ApplyQueued();
         Log("[Build] hooks enabled status=%d", result);
         const bool hookReady = result == MH_OK;
-        if (hookReady && !tachyonEndpoint.empty()) {
+        if (hookReady && (!tachyonEndpoint.empty() || !tachyonPublicKey.empty())) {
             Log("[Networking] configured endpoint ready before room join: %s; public key configured=%d",
-                tachyonEndpoint.c_str(), !tachyonPublicKey.empty());
+                tachyonEndpoint.empty() ? "matchmaking (no address override)" : tachyonEndpoint.c_str(),
+                !tachyonPublicKey.empty());
             Log("[Networking] room transport connects during room join; title-screen Photon:none is expected "
                 "before that connection");
         }
