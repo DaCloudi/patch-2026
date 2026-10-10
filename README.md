@@ -47,7 +47,7 @@ sections of the supplied INI and configure Tachyon if your operator requires it.
 | `VoiceKeyXml` | Your operator's RSA **public** key, on one line, containing only `Modulus` and `Exponent`. A remote Tachyon override needs it; loopback can keep the client's key. Never enter a private key. |
 | `DisableCertificatePinning` | `1` enables certificate compatibility for your configured service domain and its subdomains. Use `0` to keep original checks. |
 | `AllowUnsignedImages` | `1` accepts images without the original service's signature. This applies to all images checked by the patch. Use `0` to keep original checks. |
-| `FramesPerSecond` | `0` keeps original screen-sharing presets. Set 1-15 for a target rate; the delivered rate can be lower. Higher rates use more bandwidth. |
+| `FramesPerSecond` | `0` keeps original screen-sharing presets. Set 1-60 for a target rate; the delivered rate can be lower. Higher rates use more bandwidth. |
 | `Verbose` | `0` keeps routine diagnostics off. Set `1` temporarily when troubleshooting. |
 
 ## Troubleshooting

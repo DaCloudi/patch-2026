@@ -69,6 +69,7 @@ namespace RR::Offsets::RoomieController {
 }
 
 namespace RR::Offsets::ByteArray {
+    inline constexpr uintptr_t Length = 0x18;
     inline constexpr uintptr_t Data = 0x20;
 }
 

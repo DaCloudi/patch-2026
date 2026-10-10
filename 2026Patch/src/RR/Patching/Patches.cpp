@@ -12,6 +12,7 @@
 #include <mutex>
 #include <intrin.h>
 #include "../../Utils/DesktopCapture.h"
+#include "../../Utils/ScreenShareWire.h"
 #include "../../Utils/Logging.h"
 #include "../Config.h"
 #include "../Methods.h"
@@ -490,7 +491,97 @@ namespace RR::Patches {
         }
         return roomieHasNoEnergyOriginal(instance, method);
     }
+    static thread_local bool sendingScreenChunk = false;
+    static int (*sendScreenChunkOriginal)(void*, void*) = nullptr;
+    static void (*serializeArrayOriginal)(void*, void*, ScreenShareWire::WriterHandle*, void*) = nullptr;
+    static bool (*writerReserve)(ScreenShareWire::WriterHandle**, int, void*) = nullptr;
+    static LONG screenByteCode = 0;
+    static int SendScreenChunk(void* instance, void* method) {
+        // Scope the fast array path to the native screen-share packet dispatch.
+        // Keep routing, delivery, fragmentation, counters and backpressure native.
+        const bool previous = sendingScreenChunk;
+        sendingScreenChunk = true;
+        LARGE_INTEGER begin{}, end{};
+        QueryPerformanceCounter(&begin);
+        int result = 0;
+        __try {
+            result = sendScreenChunkOriginal(instance, method);
+        } __finally {
+            sendingScreenChunk = previous;
+        }
+        QueryPerformanceCounter(&end);
+        static LONG count = 0;
+        const LONG frame = InterlockedIncrement(&count);
+        if (frame <= 3 || frame % 30 == 1) {
+            LogVerbose("[DesktopCapture] send chunk=%ld serialize/dispatch=%.2fms thread=%lu", frame,
+                       DesktopCapture::Milliseconds(begin, end), GetCurrentThreadId());
+        }
+        return result;
+    }
+    static void SerializeScreenArray(void* object, void* type, ScreenShareWire::WriterHandle* handle,
+                                     void* method) {
+        // 9AD4260 receives FastBufferWriter's eight-byte handle by value in R8.
+        // Its byte-array path writes int32 count, one element-type code, then
+        // obtains/boxes every byte through IList before invoking its byte writer.
+        // The first native packet verifies the exact encoding before bulk copying
+        // subsequent packets. All other arrays/callers retain the native path.
+        if (!sendingScreenChunk || !byteArrayClass || !object ||
+            *reinterpret_cast<void**>(object) != byteArrayClass || !handle) {
+            serializeArrayOriginal(object, type, handle, method);
+            return;
+        }
+        const auto array = reinterpret_cast<uintptr_t>(object);
+        const uint64_t length = *reinterpret_cast<uint64_t*>(array + RR::Offsets::ByteArray::Length);
+        const int size = ScreenShareWire::PayloadSize(length);
+        auto bytes = reinterpret_cast<const unsigned char*>(array + RR::Offsets::ByteArray::Data);
+        const LONG verified = InterlockedCompareExchange(&screenByteCode, 0, 0);
+        if (size > 0 && verified > 0 && handle->position >= 0 && handle->position <= handle->maxCapacity &&
+            size <= handle->maxCapacity - handle->position && writerReserve(&handle, size, nullptr) &&
+            ScreenShareWire::Write(handle, bytes, static_cast<int>(length),
+                                   static_cast<unsigned char>(verified - 1))) {
+            return;
+        }
+        const int before = handle->position;
+        LARGE_INTEGER begin{}, end{};
+        QueryPerformanceCounter(&begin);
+        serializeArrayOriginal(object, type, handle, method);
+        QueryPerformanceCounter(&end);
+        if (!verified && size > 0 && before >= 0 && handle->position >= before &&
+            handle->position <= handle->capacity && handle->buffer &&
+            ScreenShareWire::Matches(handle->buffer + before, handle->position - before, bytes,
+                                     static_cast<int>(length))) {
+            const unsigned char code = handle->buffer[before + 4];
+            InterlockedCompareExchange(&screenByteCode, static_cast<LONG>(code) + 1, 0);
+            Log("[DesktopCapture] native byte-array wire verified; bytes=%llu code=%u baseline=%.2fms; "
+                "bulk screen-share serialization enabled",
+                length, code, DesktopCapture::Milliseconds(begin, end));
+        } else if (!verified) {
+            static LONG logged = 0;
+            if (!InterlockedCompareExchange(&logged, 1, 0)) {
+                Log("[DesktopCapture] byte-array wire verification failed; native serialization retained");
+            }
+        }
+    }
+    static void (*receiveScreenFrameOriginal)(void*, void*, void*) = nullptr;
+    static void ReceiveScreenFrame(void* instance, void* bytes, void* method) {
+        // 20260323.14 schema: DesktopScreenSharingDisplay.NUCNWALGMIP(Byte[]).
+        // 16CA010 schedules its native delegate then calls LoadImage at B4778D0
+        // for the texture at +A8. Preserve all three register arguments and the
+        // entire native behavior; only verbose builds install this timing hook.
+        LARGE_INTEGER begin{}, end{};
+        QueryPerformanceCounter(&begin);
+        receiveScreenFrameOriginal(instance, bytes, method);
+        QueryPerformanceCounter(&end);
+        static LONG count = 0;
+        const LONG frame = InterlockedIncrement(&count);
+        if (frame <= 3 || frame % 30 == 1) {
+            LogVerbose("[DesktopCapture] receive frame=%ld dispatch/decode/upload=%.2fms thread=%lu", frame,
+                       DesktopCapture::Milliseconds(begin, end), GetCurrentThreadId());
+        }
+    }
     static void* CaptureDesktop(int display, int width, int quality, void*) {
+        LARGE_INTEGER begin{}, allocated{}, end{};
+        QueryPerformanceCounter(&begin);
         // Resolve managed metadata on this attached capture task, never on the DLL's
         // unmanaged initialization thread. The client serializes capture tasks.
         if (!byteArrayClass) {
@@ -505,7 +596,8 @@ namespace RR::Patches {
         DesktopCapture::Bounds bounds{};
         desktopBounds(&bounds, display, nullptr);
         std::vector<unsigned char> jpeg;
-        const bool success = captureGdiToken && DesktopCapture::Encode(bounds, width, quality, jpeg);
+        DesktopCapture::Timing timing;
+        const bool success = captureGdiToken && DesktopCapture::Encode(bounds, width, quality, jpeg, &timing);
         static LONG frameCount = 0;
         // Keep the first-frame proof useful without logging every captured frame.
         // Repeated encoding failures are sampled even when Verbose is disabled.
@@ -514,10 +606,23 @@ namespace RR::Patches {
             Log("[DesktopCapture] frame=%ld display=%d source=%dx%d width=%d quality=%d JPEG=%zu success=%d",
                 frame, display, bounds.width, bounds.height, width, quality, jpeg.size(), success);
         }
+        QueryPerformanceCounter(&allocated);
         auto array = byteArrayNew(byteArrayClass, jpeg.size());
         if (array && !jpeg.empty()) {
             memcpy(reinterpret_cast<unsigned char*>(array) + RR::Offsets::ByteArray::Data, jpeg.data(),
                    jpeg.size());
+        }
+        QueryPerformanceCounter(&end);
+        static int previousBackend = -1;
+        const int backend = timing.duplication ? 1 : 0;
+        if (backend != previousBackend || (verboseLogging && (frame <= 3 || frame % 30 == 1))) {
+            Log("[DesktopCapture] backend=%s DXGI-status=%08lX capture=%.2fms readback=%.2fms resize=%.2fms "
+                "JPEG=%.2fms managed=%.2fms total=%.2fms thread=%lu",
+                timing.duplication ? "DXGI" : "GDI", timing.duplicationStatus, timing.captureMs,
+                timing.readbackMs, timing.resizeMs, timing.encodeMs,
+                DesktopCapture::Milliseconds(allocated, end), DesktopCapture::Milliseconds(begin, end),
+                GetCurrentThreadId());
+            previousBackend = backend;
         }
         return array;
     }
@@ -954,6 +1059,38 @@ namespace RR::Patches {
         if (!roomieHasNoEnergyOriginal) {
             MH_Uninitialize();
             return 5;
+        }
+        writerReserve = reinterpret_cast<decltype(writerReserve)>(
+            Gate(reinterpret_cast<void*>(game + RR::Methods::DesktopCapture::WriterReserve)));
+        if (!writerReserve ||
+            !Hook(RR::Methods::DesktopCapture::SendChunk, reinterpret_cast<void*>(SendScreenChunk),
+                  reinterpret_cast<void**>(&sendScreenChunkOriginal), "DesktopCapture.SendChunk") ||
+            !Hook(RR::Methods::DesktopCapture::SerializeArray, reinterpret_cast<void*>(SerializeScreenArray),
+                  reinterpret_cast<void**>(&serializeArrayOriginal), "DesktopCapture.BulkByteArray")) {
+            MH_Uninitialize();
+            return 5;
+        }
+        sendScreenChunkOriginal = reinterpret_cast<decltype(sendScreenChunkOriginal)>(
+            Gate(reinterpret_cast<void*>(sendScreenChunkOriginal)));
+        serializeArrayOriginal = reinterpret_cast<decltype(serializeArrayOriginal)>(
+            Gate(reinterpret_cast<void*>(serializeArrayOriginal)));
+        if (!sendScreenChunkOriginal || !serializeArrayOriginal) {
+            MH_Uninitialize();
+            return 5;
+        }
+        if (settings.verbose) {
+            if (!Hook(RR::Methods::DesktopCapture::ReceiveFrame, reinterpret_cast<void*>(ReceiveScreenFrame),
+                      reinterpret_cast<void**>(&receiveScreenFrameOriginal),
+                      "DesktopCapture.ReceiveFrameTiming")) {
+                MH_Uninitialize();
+                return 5;
+            }
+            receiveScreenFrameOriginal = reinterpret_cast<decltype(receiveScreenFrameOriginal)>(
+                Gate(reinterpret_cast<void*>(receiveScreenFrameOriginal)));
+            if (!receiveScreenFrameOriginal) {
+                MH_Uninitialize();
+                return 5;
+            }
         }
         // Zero is native behavior: do not install a refresh-rate hook at all.
         // Explicit overrides alter presets while keeping adaptive/backpressure logic.

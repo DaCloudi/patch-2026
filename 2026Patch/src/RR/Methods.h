@@ -70,6 +70,11 @@ namespace RR::Methods::Friends {
 namespace RR::Methods::DesktopCapture {
     inline constexpr uintptr_t Bounds = 0x1A034E0;
     inline constexpr uintptr_t Capture = 0x1A03670;
+    inline constexpr uintptr_t ReceiveFrame = 0x16CA010;   // NUCNWALGMIP(Byte[]); diagnostic only.
+    inline constexpr uintptr_t SendChunk = 0x16C97B0;      // JDHGUYZICKL(); native packet dispatch.
+    inline constexpr uintptr_t SerializeArray = 0x9AD4260; // RYVCIIOUZLU.DIJQDPKNCFT.
+    // BC8640 is the boxed adjustor thunk; use the measured unboxed three-register body.
+    inline constexpr uintptr_t WriterReserve = 0x3D55BC0;
     inline constexpr uintptr_t Update = 0x16CAFE0;
 }
 

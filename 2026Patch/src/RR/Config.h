@@ -62,8 +62,8 @@ namespace RR::Config {
         settings.verbose = GetPrivateProfileIntW(L"Logging", L"Verbose", 0, path.c_str()) != 0;
         settings.framesPerSecond =
             static_cast<int>(GetPrivateProfileIntW(L"ScreenShare", L"FramesPerSecond", 0, path.c_str()));
-        if (settings.framesPerSecond < 0 || settings.framesPerSecond > 15) {
-            error = "FramesPerSecond must be between 0 and 15 (0 retains the client presets).";
+        if (settings.framesPerSecond < 0 || settings.framesPerSecond > 60) {
+            error = "FramesPerSecond must be between 0 and 60 (0 retains the client presets).";
             return false;
         }
         // Developer launcher overrides are process-local and applied after the
