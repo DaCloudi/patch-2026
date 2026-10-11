@@ -75,4 +75,4 @@ sections of the supplied INI and configure Tachyon if your operator requires it.
 
 Developer and build guidance is in [AGENTS.md](AGENTS.md).
 
-Credits: [recflare/patch-2025](https://github.com/recflare/patch-2025) for formatting, injection, packaging, and other miscellaneous references. Stay awesome and open-source! <3
+Credits: [Carpetsoft/Rec-Room-2025-Patch](https://github.com/Carpetsoft/Rec-Room-2025-Patch) for the original 2025 patch and injector. Amazing work! | [recflare/patch-2025](https://github.com/recflare/patch-2025) for formatting, packaging, and other miscellaneous references. Stay awesome and open-source! <3
