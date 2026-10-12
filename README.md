@@ -5,7 +5,7 @@ client versions are unsupported. The patch leaves the original game files intact
 
 ## Installation
 
-1. Extract all five files from `Patch26Dist.zip` into the folder containing
+1. Extract all five files from the release ZIP (`2026Patch-<version>-x64.zip`) into the folder containing
    `RecRoom.exe`: `2026patch.dll`, `Injector.exe`, `2026patch.ini`,
    `RecRoomScreen.bat` and `RecRoomVR.bat`.
 2. Edit `2026patch.ini` using the connection details supplied by your server operator.

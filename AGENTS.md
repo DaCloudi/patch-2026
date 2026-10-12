@@ -60,8 +60,11 @@ Manual launch is also supported: start Injector.exe first, keep it running and
 then start RecRoom.exe from the same installation. User-facing prompts must cover
 this path as well as the automatic batch launchers.
 
-CI checks formatting and builds/packages the native binaries. Releases run only
-for `v*` tags. Research/test sources are excluded from this source snapshot.
+CI checks formatting and builds/packages the native binaries, then uploads the
+five drop-in files flat as artifact `2026Patch-x64`. Releases run only for `v*`
+tags: as in recflare/patch-2025, the release job zips those five files by explicit
+list into `2026Patch-<tag>-x64.zip` and publishes it with generated notes. Local
+`Patch26Dist.zip` has the same contents; keep both allowlists identical. Research/test sources are excluded from this source snapshot.
 Earlier automated checks recorded below are completed validation, not the current
 CI suite. Keep local investigation tooling outside the published tree.
 
