@@ -99,7 +99,6 @@ namespace RR::Methods::Netcode {
 
 namespace RR::Methods::Tachyon {
     inline constexpr uintptr_t Constructor = 0x9AA3DD0;
-    inline constexpr uintptr_t ConnectRoom = 0x9AA42B0;
     inline constexpr uintptr_t Connected = 0x9AA2CE0;
     inline constexpr uintptr_t Disconnected = 0x9AA3390;
     inline constexpr uintptr_t Failure = 0x9AA3470;

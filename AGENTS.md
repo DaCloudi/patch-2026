@@ -175,9 +175,22 @@ do not treat broad C++ catch as pointer validation.
 
 ## Network configuration and distinct request paths
 
+The INI mirrors `2025patch.ini` from recflare/patch-2025: one `[config]` section,
+with `ApiHost`, `EnableTracing` and `VoiceKeyXml` keeping their 2025 names and
+meaning and flags spelled true/false (1/0, yes/no, on/off also parse). Settings
+without a 2025 counterpart keep their 2026 names in the same section. 2025-only
+keys (`PhotonHost`, `PhotonPort`, `EnableConsole`, `BlockDeadHosts`,
+`SuppressDuidMismatch`) are ignored: this client's room transport is Tachyon and
+its endpoint comes from matchmaking, so the Photon keys have no target. Unlike 2025, invalid values fail
+startup instead of falling back, a missing file is not regenerated and the file
+is DLL-relative. The earlier `[Network]`/`[ScreenShare]`/`[Logging]` layout is
+rejected with a migration message, since it would otherwise apply nothing.
+
 The INI beside the DLL must exist; routing fields can independently be missing or
-blank. `ServerUrl` redirects the stock HTTP discovery origin `ns.rec.net`, preserving
-its suffix. Discovery supplies other service endpoints. `ServerDomain` scopes
+blank. `ApiHost` redirects the stock HTTP discovery origin `ns.rec.net`, preserving
+its suffix. A bare host[:port] replaces only the authority and keeps the request's
+scheme, as the 2025 patch does; a full http(s) origin replaces the scheme too.
+Discovery supplies other service endpoints. `ServerDomain` scopes
 domain-based overrides: equality or a dot-separated subdomain is required, excluding
 lookalike suffixes. An empty domain grants no scope. Do not turn protocol identifiers
 such as stock discovery hosts or API routes into operator defaults.
@@ -194,24 +207,27 @@ verifier receives bytes, not a URL, so `AllowUnsignedImages` is global; do not c
 domain restrictions. Both flags can retain original checks. Paths, query strings
 and headers may contain account data and must not be logged.
 
-`TachyonHost` accepts hostname/IPv4 plus port 1-65535. The measured transport calls
-IPAddress.Parse; resolve hostnames to IPv4 before room entry. IPv6 overrides are
-unsupported. Blank transport ID keeps matchmaking's server ID. Remote overrides
-require RSA public XML with only Modulus/Exponent; loopback may retain the client's
-key. Private RSA fields belong on the server and are rejected even when other
-transport settings are absent.
-Public-key replacement is independent of the address override: a configured key
-with blank `TachyonHost` preserves matchmaking's endpoint and server ID. This path
-is under local development testing; prior release validation does not cover it.
+The room transport endpoint and server ID always come from matchmaking. The
+`TachyonHost`/`TachyonServerId` overrides, their `PATCH26_TACHYON_ENDPOINT`
+environment override, startup IPv4 resolution and the ConnectRoom MoveNext hook
+(`0x9AA42B0`) were removed on 2026-10-12 at the maintainer's request as unneeded;
+leftover keys in an INI are ignored. `VoiceKeyXml` replaces only the Tachyon RSA
+public key and accepts XML with only Modulus/Exponent. Private RSA fields belong
+on the server and are rejected. A configured key also installs the
+connected/disconnected/failure observers. Key replacement with matchmaking's
+endpoint is under local development testing; prior release validation does not
+cover it.
 
-Environment overrides `PATCH26_TACHYON_ENDPOINT` and `PATCH26_TACHYON_PUBLIC_KEY`
-follow the INI. Any local tooling that sets them must pass the same environment
-to injector/client and restore the caller's values on failure. The shipped launchers
-use the INI. Do not log the public-key file or contents.
+Environment override `PATCH26_TACHYON_PUBLIC_KEY` follows the INI. Any local
+tooling that sets it must pass the same environment to injector/client and restore
+the caller's value on failure. The shipped launchers use the INI. Do not log the
+public-key file or contents.
 
 The historical Photon overlay label is misleading: the observed room path uses
 Unity Netcode/LiteNetLib with Tachyon and Dissonance integration. ConnectRoom reads
-target room `+0x30`, DTO voice address `+0x40` and server ID `+0x48`. Overlay `none`
+target room `+0x30`, DTO voice address `+0x40` and server ID `+0x48`; the removed
+override wrote the latter two through the write barrier when MoveNext state was -1,
+and the measured transport parses the address with IPAddress.Parse (no DNS). Overlay `none`
 before room selection is expected. Do not force online state or fake a successful
 connection. Photon app IDs alone do not supply approval/key exchange, Netcode
 spawn/RPC contracts or voice transport. Keep those backend requirements distinct
@@ -293,7 +309,7 @@ Referee control flow. Do not broadly suppress errors to conceal a backend failur
 
 `2026patch.log` is DLL-relative, reset per launch, capped at 1 MiB and serialized
 by a shared lock. Default messages cover startup, connection transitions and
-failures. `Verbose=1` enables routine HTTP/hook diagnostics. Capture emits a first
+failures. `EnableTracing=true` enables routine HTTP/hook diagnostics. Capture emits a first
 frame and sampled failures; module-scan/no-credit notices emit once. Never log
 credentials, paths/queries/headers, key contents or image bytes.
 
@@ -561,3 +577,29 @@ validation used DXGI for 60/60 warm frames with stable GDI handles and valid JPE
 Prior live testing confirmed removal of the repeating hitch at native presets;
 the 60 FPS target has startup confirmation, without separate live-rate validation.
 Local test scripts, captures, traces, installed INIs and binaries are excluded.
+
+
+### 2025-compatible INI layout and Tachyon override removal (2026-10-12)
+
+At the maintainer's request the INI now mirrors recflare/patch-2025's
+`2025patch.ini` (`[config]`, `ApiHost`, `EnableTracing`, true/false flags), and
+the `TachyonHost`/`TachyonServerId` override path was removed. Formatting and
+the package build passed with no compiler warnings. A local harness around
+`Config::Load` accepted the source and packaged templates, the unmodified 2025
+template and a 2025-style file with Photon keys present (ignored); it rejected
+the previous section layout, a non-boolean flag, an `ApiHost` with a path, a
+domain mismatch, private RSA fields, FPS 61 and a missing file. A second harness
+confirmed that a bare `ApiHost` keeps the request scheme while a full origin
+replaces it, and that other hosts are untouched. Windows Defender initially
+blocked the fresh local `Injector.exe`; after the maintainer allowed it,
+`--check-config` accepted the packaged, 2025 and 2025-style files, rejected the
+previous layout, a bad flag and a missing file, and verified the build against
+the fingerprinted `C:\Games\recflare-2026` client using the packaged INI.
+With the maintainer's approval and the client closed, the DLL and injector were
+then installed into `C:\Games\recflare-2026` and its INI converted to `[config]`
+with every value preserved (the discovery origin kept verbatim as `ApiHost`).
+Installed hashes matched the build and `Injector.exe --check-install` passed.
+Backup: x64/Build/recflare-2026-config-backup-20261012-152309. The installed
+launchers differ from the repository's and were left as they were. The client
+has not been launched: discovery redirection, key import without the ConnectRoom
+hook and room entry need a gameplay retest on this build. Nothing has been committed, pushed or published.
