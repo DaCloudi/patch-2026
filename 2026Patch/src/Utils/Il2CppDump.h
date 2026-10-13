@@ -345,43 +345,48 @@ namespace Il2CppDump {
         size_t size = 0;
     };
 
-    // Returns the end of the data (largest offset + size) when the header's (offset, size) pairs all
-    // fit a blob of the given size, otherwise 0.
-    inline size_t PlausibleHeaderEnd(const unsigned char* header, size_t blobSize, int32_t* firstOffset) {
+    constexpr int HeaderPairs = 31; // 8 + 31 * 8 = 0x100, the size of the metadata header
+
+    // True when 31 (offset, size) pairs at `pairs` describe the tables of a blob of this size: the first
+    // table starts right after the header, offsets never go backwards, each table lies inside the blob,
+    // and the last one ends where the blob does. Returns the end of the data, or 0.
+    inline size_t PlausiblePairsEnd(const unsigned char* pairs, size_t blobSize) {
         size_t end = 0;
-        int valid = 0;
-        for (int pair = 0; pair < 40; ++pair) {
+        int populated = 0;
+        int32_t previous = 0;
+        for (int pair = 0; pair < HeaderPairs; ++pair) {
             int32_t offset = 0, size = 0;
-            memcpy(&offset, header + 8 + pair * 8, 4);
-            memcpy(&size, header + 12 + pair * 8, 4);
+            memcpy(&offset, pairs + pair * 8, 4);
+            memcpy(&size, pairs + pair * 8 + 4, 4);
             if (offset < 0 || size < 0 ||
                 static_cast<size_t>(offset) + static_cast<size_t>(size) > blobSize) {
                 return 0;
             }
-            if (offset >= 0x100 && size > 0) {
-                ++valid;
+            // Unused tables have size 0 and an arbitrary offset, so only populated ones are ordered.
+            if (size > 0) {
+                if (offset < previous) {
+                    return 0;
+                }
+                previous = offset;
+                ++populated;
             }
             end = (std::max)(end, static_cast<size_t>(offset) + static_cast<size_t>(size));
         }
-        memcpy(firstOffset, header + 8, 4);
-        return valid >= 20 && *firstOffset >= 0x100 && *firstOffset <= 0x800 ? end : 0;
+        int32_t first = 0;
+        memcpy(&first, pairs, 4);
+        return first == 0x100 && populated >= 18 && end + 8192 >= blobSize ? end : 0;
     }
 
     // No C++ objects with destructors, so it can contain the SEH block.
     inline bool ScanHeaderGuarded(const unsigned char* begin, size_t length, size_t blobSize,
-                                  const unsigned char** found, size_t* end, int32_t* version,
-                                  int32_t* headerSize) {
+                                  const unsigned char** found, size_t* end) {
         __try {
-            for (size_t i = 0; i + 0x400 < length; ++i) {
-                if (begin[i] != 0xAF || begin[i + 1] != 0x1B || begin[i + 2] != 0xB1 ||
-                    begin[i + 3] != 0xFA) {
+            for (size_t i = 0; i + HeaderPairs * 8 <= length; i += 4) {
+                if (begin[i] != 0x00 || begin[i + 1] != 0x01 || begin[i + 2] != 0x00 ||
+                    begin[i + 3] != 0x00) {
                     continue;
                 }
-                memcpy(version, begin + i + 4, 4);
-                if (*version < 24 || *version > 45) {
-                    continue;
-                }
-                if (const size_t e = PlausibleHeaderEnd(begin + i, blobSize, headerSize)) {
+                if (const size_t e = PlausiblePairsEnd(begin + i, blobSize)) {
                     *found = begin + i;
                     *end = e;
                     return true;
@@ -488,70 +493,114 @@ namespace Il2CppDump {
                                 PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
     }
 
-    // The mapped file view that holds the metadata string table.
-    inline Blob FindMappedBlob() {
-        Blob best;
+    inline bool MemoryReadable(const void* address, size_t length) {
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(address, &info, sizeof(info)) != sizeof(info) || !ReadableRegion(info)) {
+            return false;
+        }
+        const auto* end = static_cast<const unsigned char*>(info.BaseAddress) + info.RegionSize;
+        return static_cast<const unsigned char*>(address) + length <= end;
+    }
+
+    // Mapped file views that hold the metadata string table (usually one, but other mappings of the
+    // game's own files can contain the same name).
+    inline int FindMappedBlobs(Blob* blobs, int capacity) {
+        int count = 0;
         MEMORY_BASIC_INFORMATION info{};
         const unsigned char* cursor = nullptr;
-        while (VirtualQuery(cursor, &info, sizeof(info)) == sizeof(info)) {
+        while (count < capacity && VirtualQuery(cursor, &info, sizeof(info)) == sizeof(info)) {
             const auto* begin = static_cast<const unsigned char*>(info.BaseAddress);
             if (ReadableRegion(info) && info.Type == MEM_MAPPED && info.RegionSize >= (20u << 20) &&
-                info.RegionSize <= (200u << 20) && info.RegionSize > best.size &&
+                info.RegionSize <= (200u << 20) &&
                 RegionHasMarker(begin, info.RegionSize, "Assembly-CSharp.dll", 19)) {
-                best.base = begin;
-                best.size = info.RegionSize;
+                blobs[count].base = begin;
+                blobs[count].size = info.RegionSize;
+                ++count;
             }
             cursor = begin + info.RegionSize;
             if (cursor <= begin) {
                 break;
             }
         }
-        return best;
+        return count;
     }
 
     inline void DumpMetadata(const std::wstring& directory) {
-        const Blob blob = FindMappedBlob();
-        if (!blob.base) {
+        Blob blobs[8];
+        const int blobCount = FindMappedBlobs(blobs, 8);
+        if (!blobCount) {
             PatchLogging::Log("[Metadata] no mapped metadata found; surveying large regions");
             DescribeRegions(directory);
             return;
         }
-        PatchLogging::Log("[Metadata] mapped data at %p, %llu bytes", static_cast<const void*>(blob.base),
-                          static_cast<unsigned long long>(blob.size));
-        const unsigned char* header = nullptr;
+        for (int i = 0; i < blobCount; ++i) {
+            PatchLogging::Log("[Metadata] mapped candidate %d at %p, %llu bytes", i,
+                              static_cast<const void*>(blobs[i].base),
+                              static_cast<unsigned long long>(blobs[i].size));
+        }
+        // Look for the decoded table of (offset, size) pairs that matches one of the mappings.
+        Blob blob;
+        const unsigned char* pairs = nullptr;
         size_t end = 0;
-        int32_t version = 0, headerSize = 0;
         MEMORY_BASIC_INFORMATION info{};
         const unsigned char* cursor = nullptr;
-        while (!header && VirtualQuery(cursor, &info, sizeof(info)) == sizeof(info)) {
+        while (!pairs && VirtualQuery(cursor, &info, sizeof(info)) == sizeof(info)) {
             const auto* begin = static_cast<const unsigned char*>(info.BaseAddress);
-            if (ReadableRegion(info) && begin != blob.base) {
-                ScanHeaderGuarded(begin, info.RegionSize, blob.size, &header, &end, &version, &headerSize);
+            if (ReadableRegion(info)) {
+                bool isBlob = false;
+                for (int i = 0; i < blobCount; ++i) {
+                    isBlob = isBlob || blobs[i].base == begin;
+                }
+                for (int i = 0; i < blobCount && !isBlob && !pairs; ++i) {
+                    if (ScanHeaderGuarded(begin, info.RegionSize, blobs[i].size, &pairs, &end)) {
+                        blob = blobs[i];
+                    }
+                }
             }
             cursor = begin + info.RegionSize;
             if (cursor <= begin) {
                 break;
             }
         }
-        if (!header) {
-            PatchLogging::Log("[Metadata] no decoded header copy found; saving the mapped data instead");
+        if (!pairs) {
+            PatchLogging::Log("[Metadata] no decoded header table found; saving the mapped data instead");
             DescribeRegions(directory);
             return;
         }
-        PatchLogging::Log("[Metadata] header copy at %p: version=%d headerSize=%d dataEnd=%llu",
-                          static_cast<const void*>(header), version, headerSize,
-                          static_cast<unsigned long long>(end));
+        // A magic and version, if the copy kept them just before the pairs, are used as they are.
+        int32_t version = 31;
+        bool hasMagic = false;
+        if (MemoryReadable(pairs - 8, 8) && pairs[-8] == 0xAF && pairs[-7] == 0x1B && pairs[-6] == 0xB1 &&
+            pairs[-5] == 0xFA) {
+            hasMagic = true;
+            memcpy(&version, pairs - 4, 4);
+        }
+        PatchLogging::Log("[Metadata] header table at %p (magic %s, version %d), data ends at %llu of %llu",
+                          static_cast<const void*>(pairs), hasMagic ? "present" : "absent", version,
+                          static_cast<unsigned long long>(end), static_cast<unsigned long long>(blob.size));
+        for (int i = 0; i < HeaderPairs; ++i) {
+            int32_t offset = 0, size = 0;
+            memcpy(&offset, pairs + i * 8, 4);
+            memcpy(&size, pairs + i * 8 + 4, 4);
+            PatchLogging::Log("[Metadata]   pair %d: offset=%d size=%d", i, offset, size);
+        }
         const std::wstring path = directory + L"\\2026metadata.dat";
         FILE* out = _wfsopen(path.c_str(), L"wb", _SH_DENYNO);
         if (!out) {
             PatchLogging::Log("[Metadata] cannot create 2026metadata.dat beside the DLL");
             return;
         }
-        // The header copy replaces the scrambled start of the mapping; everything after it is the
-        // mapping's own data, up to where the header says the file ends.
+        // Rebuild the standard header (magic, version, pairs), then the mapping's own data after it.
+        unsigned char header[0x100]{};
+        header[0] = 0xAF;
+        header[1] = 0x1B;
+        header[2] = 0xB1;
+        header[3] = 0xFA;
+        memcpy(header + 4, &version, 4);
+        memcpy(header + 8, pairs, HeaderPairs * 8);
         const size_t length = (std::min)(end, blob.size);
-        const bool ok = WriteGuarded(out, header, static_cast<size_t>(headerSize)) &&
-                        WriteGuarded(out, blob.base + headerSize, length - static_cast<size_t>(headerSize));
+        const bool ok = WriteGuarded(out, header, sizeof(header)) &&
+                        WriteGuarded(out, blob.base + sizeof(header), length - sizeof(header));
         fclose(out);
         PatchLogging::Log("[Metadata] %s 2026metadata.dat (version %d, %llu bytes)",
                           ok ? "wrote" : "FAILED writing", version, static_cast<unsigned long long>(length));
