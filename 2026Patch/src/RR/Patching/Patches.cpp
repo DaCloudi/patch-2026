@@ -922,18 +922,6 @@ namespace RR::Patches {
         return installed;
     }
 
-    // VertexHelper.AddVert(this, Vector3*, Color32, Vector4*, MethodInfo): the colour of every uGUI Image and
-    // RawImage vertex, including prefab-only colours no setter ever sees (the menu backdrop, divider lines).
-    // The Color32 is packed in a register; alpha is kept and only orange is remapped.
-    static void (*addVertOriginal)(void*, void*, uint32_t, void*, void*) = nullptr;
-
-    static void AddVertex(void* self, void* position, uint32_t colour, void* uv0, void* method) {
-        if (menuScheme.enabled) {
-            RR::MenuColours::RemapVertex(menuScheme, colour);
-        }
-        addVertOriginal(self, position, colour, uv0, method);
-    }
-
     // Selectable.set_colors(this, ColorBlock): normal, highlighted, pressed, selected and disabled colours,
     // 16 bytes each, so the tab and button states are recoloured as a set.
     static void (*selectableSetColorsOriginal)(void*, float*, void*) = nullptr;
@@ -1354,9 +1342,6 @@ namespace RR::Patches {
             const bool selectable = Hook(
                 RR::Methods::Gradients::SelectableSetColors, reinterpret_cast<void*>(SelectableSetColors),
                 reinterpret_cast<void**>(&selectableSetColorsOriginal), "Selectable.set_colors");
-            const bool vertices =
-                Hook(RR::Methods::Gradients::VertexAddVert, reinterpret_cast<void*>(AddVertex),
-                     reinterpret_cast<void**>(&addVertOriginal), "VertexHelper.AddVert");
             bool foreground = false, background = false;
             if (logMenuColours) {
                 foreground = Hook(
@@ -1366,13 +1351,12 @@ namespace RR::Patches {
                     RR::Methods::Gradients::PaletteBackground, reinterpret_cast<void*>(PaletteBackground),
                     reinterpret_cast<void**>(&paletteBackgroundOriginal), "Palette.GetBackgroundPaletteData");
             }
-            Log("[MenuColour] hooks: SetKeys=%d set_colorKeys=%d solid=%d/%d vertices=%d selectable=%d "
-                "palette fg=%d "
+            Log("[MenuColour] hooks: SetKeys=%d set_colorKeys=%d solid=%d/%d selectable=%d palette fg=%d "
                 "bg=%d "
                 "scheme=%s log=%d",
                 keys ? 1 : 0, colourKeys ? 1 : 0, solid, static_cast<int>(colourSetterCount),
-                vertices ? 1 : 0, selectable ? 1 : 0, foreground ? 1 : 0, background ? 1 : 0,
-                menuScheme.enabled ? "on" : "off", logMenuColours ? 1 : 0);
+                selectable ? 1 : 0, foreground ? 1 : 0, background ? 1 : 0, menuScheme.enabled ? "on" : "off",
+                logMenuColours ? 1 : 0);
         }
         if (settings.probeTheme) {
             const int failed = InstallProbes(std::make_index_sequence<probeCount>{});

@@ -168,22 +168,6 @@ namespace RR::MenuColours {
         return true;
     }
 
-    // A packed Color32 vertex colour (r in the low byte). Returns true if the orange was remapped; alpha is
-    // kept. Same orange-only rule as the solid setters, so a colour a setter already changed is left alone.
-    inline bool RemapVertex(const Scheme& scheme, uint32_t& packed) {
-        float rgba[4] = {static_cast<float>(packed & 0xFF) / 255.0f,
-                         static_cast<float>((packed >> 8) & 0xFF) / 255.0f,
-                         static_cast<float>((packed >> 16) & 0xFF) / 255.0f, 1.0f};
-        if (!scheme.enabled || !RemapSolid(scheme, rgba)) {
-            return false;
-        }
-        const auto byte = [](float v) {
-            return static_cast<uint32_t>((std::min)((std::max)(v, 0.0f), 1.0f) * 255.0f + 0.5f);
-        };
-        packed = (packed & 0xFF000000u) | (byte(rgba[2]) << 16) | (byte(rgba[1]) << 8) | byte(rgba[0]);
-        return true;
-    }
-
     // A value that really is a float colour component. Guards against reading a different struct.
     inline bool SaneColour(const float* rgba) {
         for (int i = 0; i < 4; ++i) {
