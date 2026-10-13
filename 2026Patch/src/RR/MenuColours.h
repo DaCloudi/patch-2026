@@ -187,9 +187,9 @@ namespace RR::MenuColours {
     // Dark mode, surfaces: the game's cards, panels, buttons and backdrops are cream, peach or pale pink
     // (light, up to a third saturated). Pure white is left alone because it is the default tint of every
     // sprite, icon and avatar picture, and white text.
-    inline bool RemapDarkSurface(float* rgba) {
+    inline bool RemapDarkSurface(float* rgba, float minBrightness = 0.65f) {
         const Hsv hsv = ToHsv({rgba[0], rgba[1], rgba[2]});
-        if (hsv.v < 0.65f || hsv.s > 0.35f || IsPureWhite(rgba)) {
+        if (hsv.v < minBrightness || hsv.s > 0.35f || IsPureWhite(rgba)) {
             return false;
         }
         rgba[0] = 0.07f;
@@ -224,7 +224,8 @@ namespace RR::MenuColours {
             return true;
         }
         // Dark mode: the home page's peach-to-cream backdrop is a gradient of light, slightly tinted keys.
-        return scheme.dark && RemapDarkSurface(rgba);
+        // Gradients keep the stricter 0.8 cut-off: a white-to-light-grey gradient is a shine, not a surface.
+        return scheme.dark && RemapDarkSurface(rgba, 0.8f);
     }
 
     // Dark mode, text: dark, nearly grey text becomes white. Coloured and light text is left as it is.
