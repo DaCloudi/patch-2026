@@ -346,14 +346,32 @@ namespace Il2CppDump {
     };
 
     constexpr int HeaderPairs = 31; // 8 + 31 * 8 = 0x100, the size of the metadata header
+    constexpr int HeaderInts = HeaderPairs * 2;
 
-    // True when 31 (offset, size) pairs at `pairs` describe the tables of a blob of this size: the first
-    // table starts right after the header, offsets never go backwards, each table lies inside the blob,
-    // and the last one ends where the blob does. Returns the end of the data, or 0.
-    inline size_t PlausiblePairsEnd(const unsigned char* pairs, size_t blobSize) {
+    // The tables are laid out in a different order from the header's fields, so the (offset, size)
+    // pairs do not ascend. The mapping's own header holds the right numbers in a scrambled order,
+    // so the decoded copy is recognised by holding the same set of numbers.
+    struct Fingerprint {
+        uint64_t sum = 0;
+        uint64_t xored = 0;
+        uint64_t squares = 0;
+    };
+
+    inline Fingerprint FingerprintOf(const unsigned char* ints) {
+        Fingerprint fp;
+        for (int i = 0; i < HeaderInts; ++i) {
+            uint32_t value = 0;
+            memcpy(&value, ints + i * 4, 4);
+            fp.sum += value;
+            fp.xored ^= value;
+            fp.squares += static_cast<uint64_t>(value) * value;
+        }
+        return fp;
+    }
+
+    // The end of the data when every pair lies inside a blob of this size, otherwise 0.
+    inline size_t PairsEnd(const unsigned char* pairs, size_t blobSize) {
         size_t end = 0;
-        int populated = 0;
-        int32_t previous = 0;
         for (int pair = 0; pair < HeaderPairs; ++pair) {
             int32_t offset = 0, size = 0;
             memcpy(&offset, pairs + pair * 8, 4);
@@ -362,34 +380,41 @@ namespace Il2CppDump {
                 static_cast<size_t>(offset) + static_cast<size_t>(size) > blobSize) {
                 return 0;
             }
-            // Unused tables have size 0 and an arbitrary offset, so only populated ones are ordered.
-            if (size > 0) {
-                if (offset < previous) {
-                    return 0;
-                }
-                previous = offset;
-                ++populated;
-            }
             end = (std::max)(end, static_cast<size_t>(offset) + static_cast<size_t>(size));
         }
-        int32_t first = 0;
-        memcpy(&first, pairs, 4);
-        return first == 0x100 && populated >= 18 && end + 8192 >= blobSize ? end : 0;
+        return end;
     }
 
-    // No C++ objects with destructors, so it can contain the SEH block.
+    // No C++ objects with destructors, so it can contain the SEH block. Slides a 62-number window over
+    // the region and compares running totals before checking anything else.
     inline bool ScanHeaderGuarded(const unsigned char* begin, size_t length, size_t blobSize,
-                                  const unsigned char** found, size_t* end) {
+                                  const Fingerprint& want, const unsigned char** found, size_t* end) {
         __try {
-            for (size_t i = 0; i + HeaderPairs * 8 <= length; i += 4) {
-                if (begin[i] != 0x00 || begin[i + 1] != 0x01 || begin[i + 2] != 0x00 ||
-                    begin[i + 3] != 0x00) {
-                    continue;
+            const size_t words = length / 4;
+            if (words < static_cast<size_t>(HeaderInts)) {
+                return false;
+            }
+            const auto* data = reinterpret_cast<const uint32_t*>(begin);
+            Fingerprint have;
+            for (size_t i = 0; i < words; ++i) {
+                const uint32_t added = data[i];
+                have.sum += added;
+                have.xored ^= added;
+                have.squares += static_cast<uint64_t>(added) * added;
+                if (i >= static_cast<size_t>(HeaderInts)) {
+                    const uint32_t removed = data[i - HeaderInts];
+                    have.sum -= removed;
+                    have.xored ^= removed;
+                    have.squares -= static_cast<uint64_t>(removed) * removed;
                 }
-                if (const size_t e = PlausiblePairsEnd(begin + i, blobSize)) {
-                    *found = begin + i;
-                    *end = e;
-                    return true;
+                if (i + 1 >= static_cast<size_t>(HeaderInts) && have.sum == want.sum &&
+                    have.xored == want.xored && have.squares == want.squares) {
+                    const unsigned char* pairs = begin + (i + 1 - HeaderInts) * 4;
+                    if (const size_t e = PairsEnd(pairs, blobSize)) {
+                        *found = pairs;
+                        *end = e;
+                        return true;
+                    }
                 }
             }
             return false;
@@ -540,6 +565,10 @@ namespace Il2CppDump {
         }
         // Look for the decoded table of (offset, size) pairs that matches one of the mappings.
         Blob blob;
+        Fingerprint wants[8];
+        for (int i = 0; i < blobCount; ++i) {
+            wants[i] = FingerprintOf(blobs[i].base + 8);
+        }
         const unsigned char* pairs = nullptr;
         size_t end = 0;
         MEMORY_BASIC_INFORMATION info{};
@@ -552,7 +581,7 @@ namespace Il2CppDump {
                     isBlob = isBlob || blobs[i].base == begin;
                 }
                 for (int i = 0; i < blobCount && !isBlob && !pairs; ++i) {
-                    if (ScanHeaderGuarded(begin, info.RegionSize, blobs[i].size, &pairs, &end)) {
+                    if (ScanHeaderGuarded(begin, info.RegionSize, blobs[i].size, wants[i], &pairs, &end)) {
                         blob = blobs[i];
                     }
                 }
@@ -563,7 +592,8 @@ namespace Il2CppDump {
             }
         }
         if (!pairs) {
-            PatchLogging::Log("[Metadata] no decoded header table found; saving the mapped data instead");
+            PatchLogging::Log("[Metadata] no decoded header found (no block holds the same 62 numbers as the "
+                              "mapping's header); saving the mapped data instead");
             DescribeRegions(directory);
             return;
         }
