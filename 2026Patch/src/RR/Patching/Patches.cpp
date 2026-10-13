@@ -867,8 +867,6 @@ namespace RR::Patches {
     // the ini; every other colour is left as the game set it.
     static RR::MenuColours::Scheme menuScheme;
     static bool logMenuColours = false;
-    static void (*graphicSetColorOriginal)(void*, float*, void*) = nullptr;
-
     // Remaps the colour keys of a managed GradientColorKey[] in place. Layout: length at +0x18, elements from
     // +0x20, each a Color (four floats) and a float time. No objects with destructors, so the SEH block is
     // allowed here.
@@ -891,11 +889,53 @@ namespace RR::Patches {
         }
     }
 
-    static void GraphicSetColor(void* self, float* colour, void* method) {
+    // Solid colour setters that take (this, Color*, MethodInfo): remap an orange colour in place, then run
+    // the original. One template instance per target, each with its own original.
+    struct ColourSetterTarget {
+        uintptr_t rva;
+        const char* name;
+    };
+    static const ColourSetterTarget colourSetterTargets[] = {
+        {RR::Methods::Gradients::GraphicSetColor, "Graphic.set_color"},
+        {RR::Methods::Gradients::CanvasRendererSetColor, "CanvasRenderer.SetColor"},
+        {RR::Methods::Gradients::TextSetColor, "TMP_Text.set_color"},
+        {RR::Methods::Gradients::TextSetFaceColor, "TMP_Text.set_faceColor"},
+        {RR::Methods::Gradients::TextSetOutlineColor, "TMP_Text.set_outlineColor"},
+    };
+    constexpr size_t colourSetterCount = sizeof(colourSetterTargets) / sizeof(colourSetterTargets[0]);
+    static void (*colourSetterOriginal[colourSetterCount])(void*, float*, void*) = {};
+
+    template <size_t I> static void ColourSetter(void* self, float* colour, void* method) {
         if (menuScheme.enabled && colour && RR::MenuColours::SaneColour(colour)) {
             RR::MenuColours::RemapSolid(menuScheme, colour);
         }
-        graphicSetColorOriginal(self, colour, method);
+        colourSetterOriginal[I](self, colour, method);
+    }
+
+    template <size_t... I> static int InstallColourSetters(std::index_sequence<I...>) {
+        int installed = 0;
+        ((installed += Hook(colourSetterTargets[I].rva, reinterpret_cast<void*>(&ColourSetter<I>),
+                            reinterpret_cast<void**>(&colourSetterOriginal[I]), colourSetterTargets[I].name)
+                           ? 1
+                           : 0),
+         ...);
+        return installed;
+    }
+
+    // Selectable.set_colors(this, ColorBlock): normal, highlighted, pressed, selected and disabled colours,
+    // 16 bytes each, so the tab and button states are recoloured as a set.
+    static void (*selectableSetColorsOriginal)(void*, float*, void*) = nullptr;
+
+    static void SelectableSetColors(void* self, float* block, void* method) {
+        if (menuScheme.enabled && block) {
+            for (int i = 0; i < 5; ++i) {
+                float* colour = block + 4 * i;
+                if (RR::MenuColours::SaneColour(colour)) {
+                    RR::MenuColours::RemapSolid(menuScheme, colour);
+                }
+            }
+        }
+        selectableSetColorsOriginal(self, block, method);
     }
 
     // ---- gradient and palette logging -----------------------------------------------------------------
@@ -1298,19 +1338,25 @@ namespace RR::Patches {
             const bool colourKeys =
                 Hook(RR::Methods::Gradients::SetColorKeys, reinterpret_cast<void*>(GradientSetColorKeys),
                      reinterpret_cast<void**>(&setColorKeysOriginal), "Gradient.set_colorKeys");
-            const bool foreground =
-                Hook(RR::Methods::Gradients::PaletteForeground, reinterpret_cast<void*>(PaletteForeground),
-                     reinterpret_cast<void**>(&paletteForegroundOriginal), "Palette.GetForegroundColor");
-            const bool background = Hook(
-                RR::Methods::Gradients::PaletteBackground, reinterpret_cast<void*>(PaletteBackground),
-                reinterpret_cast<void**>(&paletteBackgroundOriginal), "Palette.GetBackgroundPaletteData");
-            const bool solid =
-                Hook(RR::Methods::Gradients::GraphicSetColor, reinterpret_cast<void*>(GraphicSetColor),
-                     reinterpret_cast<void**>(&graphicSetColorOriginal), "Graphic.set_color");
-            Log("[MenuColour] hooks: SetKeys=%d set_colorKeys=%d set_color=%d palette fg=%d bg=%d scheme=%s "
-                "log=%d",
-                keys ? 1 : 0, colourKeys ? 1 : 0, solid ? 1 : 0, foreground ? 1 : 0, background ? 1 : 0,
-                menuScheme.enabled ? "on" : "off", logMenuColours ? 1 : 0);
+            const int solid = InstallColourSetters(std::make_index_sequence<colourSetterCount>{});
+            const bool selectable = Hook(
+                RR::Methods::Gradients::SelectableSetColors, reinterpret_cast<void*>(SelectableSetColors),
+                reinterpret_cast<void**>(&selectableSetColorsOriginal), "Selectable.set_colors");
+            bool foreground = false, background = false;
+            if (logMenuColours) {
+                foreground = Hook(
+                    RR::Methods::Gradients::PaletteForeground, reinterpret_cast<void*>(PaletteForeground),
+                    reinterpret_cast<void**>(&paletteForegroundOriginal), "Palette.GetForegroundColor");
+                background = Hook(
+                    RR::Methods::Gradients::PaletteBackground, reinterpret_cast<void*>(PaletteBackground),
+                    reinterpret_cast<void**>(&paletteBackgroundOriginal), "Palette.GetBackgroundPaletteData");
+            }
+            Log("[MenuColour] hooks: SetKeys=%d set_colorKeys=%d solid=%d/%d selectable=%d palette fg=%d "
+                "bg=%d "
+                "scheme=%s log=%d",
+                keys ? 1 : 0, colourKeys ? 1 : 0, solid, static_cast<int>(colourSetterCount),
+                selectable ? 1 : 0, foreground ? 1 : 0, background ? 1 : 0, menuScheme.enabled ? "on" : "off",
+                logMenuColours ? 1 : 0);
         }
         if (settings.probeTheme) {
             const int failed = InstallProbes(std::make_index_sequence<probeCount>{});
