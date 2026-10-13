@@ -7,6 +7,7 @@
 #include <vector>
 #include <map>
 #include <mutex>
+#include <utility>
 #include <intrin.h>
 #include "../../Utils/DesktopCapture.h"
 #include "../../Utils/ScreenShareWire.h"
@@ -902,6 +903,15 @@ namespace RR::Patches {
 
     static void RemapMenuColour(const char* kind, void* name, float* colour) {
         if (!colour || !RR::MenuColours::SaneColour(colour)) {
+            static LONG unsane = 0;
+            const LONG n = InterlockedIncrement(&unsane);
+            if (logMenuColours && (n & (n - 1)) == 0) {
+                Log("[MenuColour] %s result is not a float colour (x%ld); first bytes %08X %08X %08X %08X",
+                    kind, n, colour ? reinterpret_cast<unsigned*>(colour)[0] : 0,
+                    colour ? reinterpret_cast<unsigned*>(colour)[1] : 0,
+                    colour ? reinterpret_cast<unsigned*>(colour)[2] : 0,
+                    colour ? reinterpret_cast<unsigned*>(colour)[3] : 0);
+            }
             return;
         }
         const float before[4] = {colour[0], colour[1], colour[2], colour[3]};
@@ -915,6 +925,11 @@ namespace RR::Patches {
 
     static bool ColourByName(void* group, void* name, float* colour, void* method) {
         const bool found = colourByNameOriginal(group, name, colour, method);
+        static LONG byNameCalls = 0;
+        const LONG calls = InterlockedIncrement(&byNameCalls);
+        if (logMenuColours && (calls & (calls - 1)) == 0) {
+            Log("[MenuColour] byName calls>=%ld", calls);
+        }
         if (found) {
             RemapMenuColour("byName", name, colour);
         }
@@ -923,10 +938,68 @@ namespace RR::Patches {
 
     static bool ColourById(void* group, void* id, float* colour, void* method) {
         const bool found = colourByIdOriginal(group, id, colour, method);
+        static LONG byIdCalls = 0;
+        const LONG calls = InterlockedIncrement(&byIdCalls);
+        if (logMenuColours && (calls & (calls - 1)) == 0) {
+            Log("[MenuColour] byId calls>=%ld", calls);
+        }
         if (found) {
             RemapMenuColour("byId", nullptr, colour);
         }
         return found;
+    }
+
+    // ---- theme probes ---------------------------------------------------------------------------------
+    // Diagnostic only (ProbeTheme=true): each target forwards its four integer registers to the original
+    // and counts the call. The count is logged on the 1st, 2nd, 4th, 8th... call, so the final log line per
+    // target is within a factor of two of the real total. Logging happens after the original returns, so
+    // floating-point argument registers are never disturbed. Targets must not take float parameters.
+    struct ProbeTarget {
+        uintptr_t rva;
+        const char* name;
+    };
+    static const ProbeTarget probeTargets[] = {
+        {0x8B972A0, "ColorTokenThemeBinder.OnDataUpdated"},
+        {0x8B958E0, "ColorThemeBinder.OnDataUpdated"},
+        {0x8B9EC80, "TMPGradientThemeBinder.OnDataUpdated"},
+        {0x8B9E480, "MaterialThemeBinder.OnDataUpdated"},
+        {0x8BA2B10, "ThemeManager.LoadTheme"},
+        {0x8BA28C0, "ThemeManager.ChangeThemeVariant"},
+        {0x8BA1E30, "ThemeDataSource.SetThemeVariant"},
+        {0x8BA0F00, "ThemeDataResolver.TryGetStyle"},
+        {0xA477230, "RRUI.GraphicTheme.Apply"},
+        {0xA480770, "RRUI.SurfaceTheme.Apply"},
+        {0xA475000, "RRUI.ButtonTheme.Apply"},
+        {0xA477C20, "RRUI.LabelTheme.Apply"},
+        {0xA47AD30, "RRUI.PaletteTheme.Update"},
+        {0xA475280, "RRUI.DepthTheme.Apply"},
+        {0xA4815F0, "RRUI.ToggleTheme.Apply"},
+        {0xA480AA0, "RRUI.SwitchTheme.Apply"},
+        {0xA481310, "RRUI.TilerTheme.Apply"},
+        {0xB5B9150, "UI.Graphic.set_color"},
+        {0xB5B72E0, "UI.Graphic.OnEnable"},
+    };
+    constexpr size_t probeCount = sizeof(probeTargets) / sizeof(probeTargets[0]);
+    static uintptr_t (*probeOriginal[probeCount])(uintptr_t, uintptr_t, uintptr_t, uintptr_t) = {};
+    static LONG probeCalls[probeCount] = {};
+
+    template <size_t I> static uintptr_t ProbeCall(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
+        const uintptr_t result = probeOriginal[I](a, b, c, d);
+        const LONG n = InterlockedIncrement(&probeCalls[I]);
+        if ((n & (n - 1)) == 0) {
+            Log("[Probe] %s calls>=%ld", probeTargets[I].name, n);
+        }
+        return result;
+    }
+
+    template <size_t... I> static int InstallProbes(std::index_sequence<I...>) {
+        int failed = 0;
+        ((failed += Hook(probeTargets[I].rva, reinterpret_cast<void*>(&ProbeCall<I>),
+                         reinterpret_cast<void**>(&probeOriginal[I]), probeTargets[I].name)
+                        ? 0
+                        : 1),
+         ...);
+        return failed;
     }
 
     DWORD Initialize(const RR::Config::Settings& settings) {
@@ -1141,6 +1214,11 @@ namespace RR::Patches {
                                    reinterpret_cast<void**>(&colourByIdOriginal), "ColorTokenGroup.ById");
             Log("[MenuColour] hooks: byName=%d byId=%d scheme=%s log=%d", byName ? 1 : 0, byId ? 1 : 0,
                 menuScheme.enabled ? "on" : "off", logMenuColours ? 1 : 0);
+        }
+        if (settings.probeTheme) {
+            const int failed = InstallProbes(std::make_index_sequence<probeCount>{});
+            Log("[Probe] installed %d of %d theme probes", static_cast<int>(probeCount) - failed,
+                static_cast<int>(probeCount));
         }
         // Zero is native behavior: do not install a refresh-rate hook at all.
         // Explicit overrides alter presets while keeping adaptive/backpressure logic.

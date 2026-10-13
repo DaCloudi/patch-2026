@@ -24,6 +24,8 @@ namespace RR::Config {
         MenuColours::Scheme menuColours;
         // Logs each menu colour name the game looks up, with its value, once.
         bool logMenuColours = false;
+        // Counts calls to the theme and UI colour entry points, to learn which paths the menus use.
+        bool probeTheme = false;
     };
 
     // Win32 INI reads return the fallback for an absent field. Empty routing
@@ -99,7 +101,8 @@ namespace RR::Config {
             !ReadFlag(path, L"DumpIl2Cpp", settings.dumpIl2Cpp) ||
             !ReadFlag(path, L"DumpMetadata", settings.dumpMetadata) ||
             !ReadFlag(path, L"DumpMethods", settings.dumpMethods) ||
-            !ReadFlag(path, L"LogMenuColours", settings.logMenuColours)) {
+            !ReadFlag(path, L"LogMenuColours", settings.logMenuColours) ||
+            !ReadFlag(path, L"ProbeTheme", settings.probeTheme)) {
             error = "DisableCertificatePinning, AllowUnsignedImages, EnableTracing and DumpIl2Cpp must be "
                     "true or false.";
             return false;
