@@ -17,6 +17,8 @@ namespace RR::Config {
         bool dumpIl2Cpp = false;
         // Writes 2026metadata.dat: the real IL2CPP metadata, copied out of the running game.
         bool dumpMetadata = false;
+        // Writes 2026modules.txt and 2026methodptrs.bin: every method's native address, by assembly.
+        bool dumpMethods = false;
     };
 
     // Win32 INI reads return the fallback for an absent field. Empty routing
@@ -90,7 +92,8 @@ namespace RR::Config {
             !ReadFlag(path, L"AllowUnsignedImages", settings.network.allowUnsignedImages) ||
             !ReadFlag(path, L"EnableTracing", settings.verbose) ||
             !ReadFlag(path, L"DumpIl2Cpp", settings.dumpIl2Cpp) ||
-            !ReadFlag(path, L"DumpMetadata", settings.dumpMetadata)) {
+            !ReadFlag(path, L"DumpMetadata", settings.dumpMetadata) ||
+            !ReadFlag(path, L"DumpMethods", settings.dumpMethods)) {
             error = "DisableCertificatePinning, AllowUnsignedImages, EnableTracing and DumpIl2Cpp must be "
                     "true or false.";
             return false;

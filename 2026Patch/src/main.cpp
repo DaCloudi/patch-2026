@@ -46,9 +46,9 @@ static DWORD WINAPI InitializePatch(void* parameter) {
         return 1;
     }
 
-    if (settings.dumpIl2Cpp || settings.dumpMetadata) {
+    if (settings.dumpIl2Cpp || settings.dumpMetadata || settings.dumpMethods) {
         // Independent of the hooks: waits for IL2CPP on its own thread and writes beside the DLL.
-        Il2CppDump::Start(directory, settings.dumpIl2Cpp, settings.dumpMetadata);
+        Il2CppDump::Start(directory, settings.dumpIl2Cpp, settings.dumpMetadata, settings.dumpMethods);
     }
 
     // File diagnostics require no console. AllocConsole can steal Unity's focus

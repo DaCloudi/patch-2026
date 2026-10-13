@@ -310,10 +310,152 @@ namespace Il2CppDump {
         }
     }
 
+    // Method addresses. il2cpp keeps one Il2CppCodeGenModule per assembly: { name*, methodCount,
+    // methodPointers*, ... }. The list of modules is a plain array of pointers somewhere in the data
+    // sections; find it by shape, then write each module's name, count and method addresses (as RVAs).
+    struct ImageInfo {
+        uintptr_t base = 0;
+        size_t size = 0;
+    };
+
+    inline bool AddressInImage(const ImageInfo& image, uintptr_t value) {
+        return value >= image.base && value < image.base + image.size;
+    }
+
+    // True when `value` points at a plausible module record: a name ending in ".dll", a sane method
+    // count and a pointer array (or null for an empty module). Contains no objects with destructors.
+    inline bool PlausibleModule(const ImageInfo& image, uintptr_t value) {
+        __try {
+            if (!AddressInImage(image, value) || value + 24 > image.base + image.size) {
+                return false;
+            }
+            const auto* record = reinterpret_cast<const uintptr_t*>(value);
+            const uintptr_t name = record[0];
+            const uint32_t count = static_cast<uint32_t>(record[1]);
+            const uintptr_t pointers = record[2];
+            if (!AddressInImage(image, name) || count > 2000000 ||
+                (count && !AddressInImage(image, pointers))) {
+                return false;
+            }
+            const auto* text = reinterpret_cast<const char*>(name);
+            size_t length = 0;
+            while (length < 80 && text[length]) {
+                if (static_cast<unsigned char>(text[length]) < 0x20 ||
+                    static_cast<unsigned char>(text[length]) > 0x7E) {
+                    return false;
+                }
+                ++length;
+            }
+            return length >= 5 && length < 80 && _stricmp(text + length - 4, ".dll") == 0;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    // Longest run of consecutive plausible module pointers in [begin, begin + length).
+    inline void FindModuleRun(const ImageInfo& image, const uintptr_t* begin, size_t words,
+                              const uintptr_t** bestStart, size_t* bestLength) {
+        __try {
+            size_t run = 0;
+            for (size_t i = 0; i < words; ++i) {
+                if (PlausibleModule(image, begin[i])) {
+                    ++run;
+                    if (run > *bestLength) {
+                        *bestLength = run;
+                        *bestStart = begin + i + 1 - run;
+                    }
+                } else {
+                    run = 0;
+                }
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+    }
+
+    inline void WriteMethodTables(HMODULE game, const std::wstring& directory) {
+        const auto* base = reinterpret_cast<const unsigned char*>(game);
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        ImageInfo image;
+        image.base = reinterpret_cast<uintptr_t>(game);
+        image.size = nt->OptionalHeader.SizeOfImage;
+        const auto* section = IMAGE_FIRST_SECTION(nt);
+        const uintptr_t* runStart = nullptr;
+        size_t runLength = 0;
+        for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+            const auto& header = section[i];
+            // Code sections are skipped; the module list is data (usually .data or .rdata).
+            if (header.Characteristics & IMAGE_SCN_CNT_CODE) {
+                continue;
+            }
+            const auto* begin = reinterpret_cast<const uintptr_t*>(base + header.VirtualAddress);
+            const size_t words = header.Misc.VirtualSize / sizeof(uintptr_t);
+            const uintptr_t* start = nullptr;
+            size_t length = 0;
+            FindModuleRun(image, begin, words, &start, &length);
+            PatchLogging::Log("[Methods] section %.8s: longest module run %llu",
+                              reinterpret_cast<const char*>(header.Name),
+                              static_cast<unsigned long long>(length));
+            if (length > runLength) {
+                runLength = length;
+                runStart = start;
+            }
+        }
+        if (runLength < 50) {
+            PatchLogging::Log("[Methods] no module list found");
+            return;
+        }
+        PatchLogging::Log("[Methods] module list at RVA 0x%llX with %llu modules",
+                          static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(runStart) - image.base),
+                          static_cast<unsigned long long>(runLength));
+        const std::wstring listPath = directory + L"\\2026modules.txt";
+        const std::wstring dataPath = directory + L"\\2026methodptrs.bin";
+        FILE* list = _wfsopen(listPath.c_str(), L"wb", _SH_DENYNO);
+        FILE* data = _wfsopen(dataPath.c_str(), L"wb", _SH_DENYNO);
+        if (!list || !data) {
+            PatchLogging::Log("[Methods] cannot create output files beside the DLL");
+            if (list) {
+                fclose(list);
+            }
+            if (data) {
+                fclose(data);
+            }
+            return;
+        }
+        size_t total = 0, failed = 0;
+        for (size_t m = 0; m < runLength; ++m) {
+            const auto* record = reinterpret_cast<const uintptr_t*>(runStart[m]);
+            const auto* name = reinterpret_cast<const char*>(record[0]);
+            const uint32_t count = static_cast<uint32_t>(record[1]);
+            const uintptr_t pointers = record[2];
+            // Entries are written as 32-bit RVAs (0 for an empty or foreign slot), in module order.
+            fprintf(list, "%s\t%u\t0x%llX\t%llu\n", name, count,
+                    static_cast<unsigned long long>(pointers ? pointers - image.base : 0),
+                    static_cast<unsigned long long>(total));
+            for (uint32_t k = 0; k < count; ++k) {
+                uint32_t rva = 0;
+                __try {
+                    const uintptr_t value = reinterpret_cast<const uintptr_t*>(pointers)[k];
+                    rva = AddressInImage(image, value) ? static_cast<uint32_t>(value - image.base) : 0;
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    ++failed;
+                }
+                fwrite(&rva, sizeof(rva), 1, data);
+            }
+            total += count;
+        }
+        fclose(list);
+        fclose(data);
+        PatchLogging::Log("[Methods] wrote %llu modules, %llu method slots (%llu unreadable)",
+                          static_cast<unsigned long long>(runLength), static_cast<unsigned long long>(total),
+                          static_cast<unsigned long long>(failed));
+    }
+
     struct Request {
         std::wstring directory;
         bool classes = false;
         bool metadata = false;
+        bool methods = false;
     };
 
     // Waits until Unity has populated its IL2CPP API table (the entry the patch itself waits for),
@@ -650,6 +792,10 @@ namespace Il2CppDump {
             Sleep(15000);
             DumpMetadata(request->directory);
         }
+        if (request->methods) {
+            Sleep(5000);
+            WriteMethodTables(game, request->directory);
+        }
         if (!request->classes) {
             return 0;
         }
@@ -676,8 +822,8 @@ namespace Il2CppDump {
         return 0;
     }
 
-    inline void Start(const std::wstring& directory, bool classes, bool metadata) {
-        auto* request = new Request{directory, classes, metadata};
+    inline void Start(const std::wstring& directory, bool classes, bool metadata, bool methods) {
+        auto* request = new Request{directory, classes, metadata, methods};
         const HANDLE thread = CreateThread(nullptr, 0, Run, request, 0, nullptr);
         if (!thread) {
             delete request;
