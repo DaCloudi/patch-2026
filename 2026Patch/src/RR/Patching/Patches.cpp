@@ -894,20 +894,21 @@ namespace RR::Patches {
     struct ColourSetterTarget {
         uintptr_t rva;
         const char* name;
+        bool text;
     };
     static const ColourSetterTarget colourSetterTargets[] = {
-        {RR::Methods::Gradients::GraphicSetColor, "Graphic.set_color"},
-        {RR::Methods::Gradients::CanvasRendererSetColor, "CanvasRenderer.SetColor"},
-        {RR::Methods::Gradients::TextSetColor, "TMP_Text.set_color"},
-        {RR::Methods::Gradients::TextSetFaceColor, "TMP_Text.set_faceColor"},
-        {RR::Methods::Gradients::TextSetOutlineColor, "TMP_Text.set_outlineColor"},
+        {RR::Methods::Gradients::GraphicSetColor, "Graphic.set_color", false},
+        {RR::Methods::Gradients::CanvasRendererSetColor, "CanvasRenderer.SetColor", false},
+        {RR::Methods::Gradients::TextSetColor, "TMP_Text.set_color", true},
+        {RR::Methods::Gradients::TextSetFaceColor, "TMP_Text.set_faceColor", true},
+        {RR::Methods::Gradients::TextSetOutlineColor, "TMP_Text.set_outlineColor", false},
     };
     constexpr size_t colourSetterCount = sizeof(colourSetterTargets) / sizeof(colourSetterTargets[0]);
     static void (*colourSetterOriginal[colourSetterCount])(void*, float*, void*) = {};
 
     template <size_t I> static void ColourSetter(void* self, float* colour, void* method) {
         if (menuScheme.enabled && colour && RR::MenuColours::SaneColour(colour)) {
-            RR::MenuColours::RemapSolid(menuScheme, colour);
+            RR::MenuColours::RemapUi(menuScheme, colour, colourSetterTargets[I].text);
         }
         colourSetterOriginal[I](self, colour, method);
     }
@@ -931,7 +932,7 @@ namespace RR::Patches {
             for (int i = 0; i < 5; ++i) {
                 float* colour = block + 4 * i;
                 if (RR::MenuColours::SaneColour(colour)) {
-                    RR::MenuColours::RemapSolid(menuScheme, colour);
+                    RR::MenuColours::RemapUi(menuScheme, colour, false);
                 }
             }
         }
