@@ -222,6 +222,93 @@ namespace Il2CppDump {
                           static_cast<unsigned long long>(dumped), static_cast<unsigned long long>(failed));
     }
 
+    // Rec Room's GameAssembly.dll exports no il2cpp_* names, so the functions have to be identified
+    // another way. These two files record every export (name, ordinal, RVA) and every populated slot
+    // of Unity's internal API table with the export, if any, that it points at.
+    inline void WriteExports(HMODULE game, const std::wstring& directory) {
+        const std::wstring path = directory + L"\\2026dump-exports.txt";
+        FILE* out = _wfsopen(path.c_str(), L"wb", _SH_DENYNO);
+        if (!out) {
+            return;
+        }
+        const auto base = reinterpret_cast<const unsigned char*>(game);
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        const auto& entry = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        if (!entry.VirtualAddress) {
+            fputs("// no export directory\n", out);
+            fclose(out);
+            return;
+        }
+        const auto* dir = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + entry.VirtualAddress);
+        const auto* functions = reinterpret_cast<const DWORD*>(base + dir->AddressOfFunctions);
+        const auto* names = reinterpret_cast<const DWORD*>(base + dir->AddressOfNames);
+        const auto* ordinals = reinterpret_cast<const WORD*>(base + dir->AddressOfNameOrdinals);
+        fprintf(out, "// functions=%lu names=%lu base=%lu\n", dir->NumberOfFunctions, dir->NumberOfNames,
+                dir->Base);
+        for (DWORD i = 0; i < dir->NumberOfNames; ++i) {
+            const WORD index = ordinals[i];
+            fprintf(out, "%lu\t0x%lX\t%s\n", dir->Base + index, functions[index],
+                    reinterpret_cast<const char*>(base + names[i]));
+        }
+        fclose(out);
+    }
+
+    inline const char* ExportNameForRva(HMODULE game, DWORD rva) {
+        const auto base = reinterpret_cast<const unsigned char*>(game);
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        const auto& entry = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        if (!entry.VirtualAddress) {
+            return nullptr;
+        }
+        const auto* dir = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + entry.VirtualAddress);
+        const auto* functions = reinterpret_cast<const DWORD*>(base + dir->AddressOfFunctions);
+        const auto* names = reinterpret_cast<const DWORD*>(base + dir->AddressOfNames);
+        const auto* ordinals = reinterpret_cast<const WORD*>(base + dir->AddressOfNameOrdinals);
+        for (DWORD i = 0; i < dir->NumberOfNames; ++i) {
+            if (functions[ordinals[i]] == rva) {
+                return reinterpret_cast<const char*>(base + names[i]);
+            }
+        }
+        return nullptr;
+    }
+
+    inline void WriteApiTable(HMODULE game, HMODULE unity, const std::wstring& directory) {
+        const std::wstring path = directory + L"\\2026dump-api-table.txt";
+        FILE* out = _wfsopen(path.c_str(), L"wb", _SH_DENYNO);
+        if (!out) {
+            return;
+        }
+        const auto gameBase = reinterpret_cast<uintptr_t>(game);
+        const auto* table = reinterpret_cast<const uintptr_t*>(reinterpret_cast<uintptr_t>(unity) +
+                                                               RR::Methods::Unity::ApiTable);
+        fputs("// slot\tGameAssembly RVA\texport name (if any)\n", out);
+        unsigned zeros = 0;
+        for (unsigned slot = 0; slot < 640 && zeros < 24; ++slot) {
+            const uintptr_t value = table[slot];
+            zeros = value ? 0 : zeros + 1;
+            if (value >= gameBase && value < gameBase + RR::Methods::GameAssembly::ImageSize) {
+                const DWORD rva = static_cast<DWORD>(value - gameBase);
+                const char* name = ExportNameForRva(game, rva);
+                fprintf(out, "%u\t0x%lX\t%s\n", slot, rva, name ? name : "");
+            } else if (value) {
+                fprintf(out, "%u\t(outside GameAssembly)\n", slot);
+            }
+        }
+        fclose(out);
+    }
+
+    inline bool WriteApiFilesGuarded(HMODULE game, HMODULE unity, const std::wstring& directory) {
+        __try {
+            WriteExports(game, directory);
+            WriteApiTable(game, unity, directory);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
     struct Request {
         std::wstring directory;
     };
@@ -251,10 +338,14 @@ namespace Il2CppDump {
             PatchLogging::Log("[Dump] IL2CPP never became ready; no dump written");
             return 1;
         }
+        if (!WriteApiFilesGuarded(game, unity, request->directory)) {
+            PatchLogging::Log("[Dump] could not read the export directory or API table");
+        }
         Sleep(20000);
         Api api;
         if (!Resolve(game, api)) {
-            PatchLogging::Log("[Dump] required IL2CPP exports are missing; no dump written");
+            PatchLogging::Log("[Dump] required IL2CPP exports are missing; no class dump written. "
+                              "Send 2026dump-exports.txt and 2026dump-api-table.txt instead");
             return 2;
         }
         void* domain = nullptr;
