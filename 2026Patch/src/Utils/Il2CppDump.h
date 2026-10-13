@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -311,14 +312,13 @@ namespace Il2CppDump {
 
     struct Request {
         std::wstring directory;
+        bool classes = false;
+        bool metadata = false;
     };
 
-    // Runs on its own thread. IL2CPP is not safe to query until Unity has initialized it, so wait for
-    // the same API-table entry the patch waits for, then allow the runtime time to finish starting.
-    inline DWORD WINAPI Run(void* parameter) {
-        const std::unique_ptr<Request> request(static_cast<Request*>(parameter));
-        HMODULE game = nullptr;
-        HMODULE unity = nullptr;
+    // Waits until Unity has populated its IL2CPP API table (the entry the patch itself waits for),
+    // which happens as the runtime starts. Returns false if that never happens.
+    inline bool WaitForIl2Cpp(HMODULE& game, HMODULE& unity) {
         const ULONGLONG deadline = GetTickCount64() + 180000;
         while (GetTickCount64() < deadline) {
             game = GetModuleHandleW(L"GameAssembly.dll");
@@ -328,20 +328,144 @@ namespace Il2CppDump {
                                                                        RR::Methods::Unity::ApiTable);
                 const auto base = reinterpret_cast<uintptr_t>(game);
                 if (table[176] >= base && table[176] < base + RR::Methods::GameAssembly::ImageSize) {
-                    break;
+                    return true;
                 }
             }
             Sleep(250);
-            game = nullptr;
         }
-        if (!game) {
+        return false;
+    }
+
+    // The shipped global-metadata.dat is a placeholder, but IL2CPP needs the real data in memory.
+    // Find it by its header (magic AF 1B B1 FA, then a version) and size it from the header's own
+    // (offset, size) pairs, which the runtime does not rewrite.
+    struct MetadataHit {
+        const unsigned char* address = nullptr;
+        size_t size = 0;
+        int version = 0;
+    };
+
+    inline size_t MetadataSize(const unsigned char* header, size_t available) {
+        size_t end = 0;
+        for (int pair = 0; pair < 40; ++pair) {
+            int32_t offset = 0, size = 0;
+            memcpy(&offset, header + 8 + pair * 8, 4);
+            memcpy(&size, header + 12 + pair * 8, 4);
+            if (offset < 0x100 || size < 0 || static_cast<size_t>(offset) > available ||
+                static_cast<size_t>(offset) + static_cast<size_t>(size) > available) {
+                continue;
+            }
+            end = (std::max)(end, static_cast<size_t>(offset) + static_cast<size_t>(size));
+        }
+        return end;
+    }
+
+    // No C++ objects with destructors, so it can contain the SEH block.
+    inline bool ScanRegionGuarded(const unsigned char* begin, size_t length, MetadataHit* hits, int capacity,
+                                  int* count) {
+        __try {
+            for (size_t i = 0; i + 0x200 < length && *count < capacity; ++i) {
+                if (begin[i] != 0xAF || begin[i + 1] != 0x1B || begin[i + 2] != 0xB1 ||
+                    begin[i + 3] != 0xFA) {
+                    continue;
+                }
+                int32_t version = 0;
+                memcpy(&version, begin + i + 4, 4);
+                if (version < 24 || version > 45) {
+                    continue;
+                }
+                const size_t size = MetadataSize(begin + i, length - i);
+                // The real data is tens of megabytes. Small matches are stray bytes or other tables.
+                if (size < (4u << 20)) {
+                    continue;
+                }
+                hits[*count].address = begin + i;
+                hits[*count].size = size;
+                hits[*count].version = version;
+                ++*count;
+            }
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    inline bool WriteGuarded(FILE* out, const unsigned char* data, size_t size) {
+        __try {
+            return fwrite(data, 1, size, out) == size;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    inline void DumpMetadata(const std::wstring& directory) {
+        MetadataHit hits[8];
+        int count = 0;
+        MEMORY_BASIC_INFORMATION info{};
+        const unsigned char* cursor = nullptr;
+        while (count < 8 && VirtualQuery(cursor, &info, sizeof(info)) == sizeof(info)) {
+            const auto* begin = static_cast<const unsigned char*>(info.BaseAddress);
+            const bool readable =
+                info.State == MEM_COMMIT && !(info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) &&
+                (info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
+                                 PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+            if (readable && info.RegionSize >= (4u << 20)) {
+                ScanRegionGuarded(begin, info.RegionSize, hits, 8, &count);
+            }
+            cursor = begin + info.RegionSize;
+            if (cursor <= begin) {
+                break;
+            }
+        }
+        if (!count) {
+            PatchLogging::Log("[Metadata] no metadata header found in memory");
+            return;
+        }
+        for (int i = 0; i < count; ++i) {
+            PatchLogging::Log("[Metadata] candidate %d: version=%d size=%llu", i, hits[i].version,
+                              static_cast<unsigned long long>(hits[i].size));
+        }
+        // The largest plausible candidate is the full metadata blob.
+        int best = 0;
+        for (int i = 1; i < count; ++i) {
+            if (hits[i].size > hits[best].size) {
+                best = i;
+            }
+        }
+        const std::wstring path = directory + L"\\2026metadata.dat";
+        FILE* out = _wfsopen(path.c_str(), L"wb", _SH_DENYNO);
+        if (!out) {
+            PatchLogging::Log("[Metadata] cannot create 2026metadata.dat beside the DLL");
+            return;
+        }
+        const bool ok = WriteGuarded(out, hits[best].address, hits[best].size);
+        fclose(out);
+        PatchLogging::Log("[Metadata] %s 2026metadata.dat (version %d, %llu bytes)",
+                          ok ? "wrote" : "FAILED writing", hits[best].version,
+                          static_cast<unsigned long long>(hits[best].size));
+    }
+
+    // Runs on its own thread. IL2CPP is not safe to query until Unity has initialized it, so wait for
+    // the API table, then allow the runtime time to finish starting.
+    inline DWORD WINAPI Run(void* parameter) {
+        const std::unique_ptr<Request> request(static_cast<Request*>(parameter));
+        HMODULE game = nullptr;
+        HMODULE unity = nullptr;
+        if (!WaitForIl2Cpp(game, unity)) {
             PatchLogging::Log("[Dump] IL2CPP never became ready; no dump written");
             return 1;
+        }
+        if (request->metadata) {
+            Sleep(15000);
+            DumpMetadata(request->directory);
+        }
+        if (!request->classes) {
+            return 0;
         }
         if (!WriteApiFilesGuarded(game, unity, request->directory)) {
             PatchLogging::Log("[Dump] could not read the export directory or API table");
         }
-        Sleep(20000);
+        Sleep(5000);
         Api api;
         if (!Resolve(game, api)) {
             PatchLogging::Log("[Dump] required IL2CPP exports are missing; no class dump written. "
@@ -361,8 +485,8 @@ namespace Il2CppDump {
         return 0;
     }
 
-    inline void Start(const std::wstring& directory) {
-        auto* request = new Request{directory};
+    inline void Start(const std::wstring& directory, bool classes, bool metadata) {
+        auto* request = new Request{directory, classes, metadata};
         const HANDLE thread = CreateThread(nullptr, 0, Run, request, 0, nullptr);
         if (!thread) {
             delete request;
