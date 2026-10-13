@@ -862,91 +862,40 @@ namespace RR::Patches {
     }
 
     // ---- menu colours -------------------------------------------------------------------------------
-    // MVVMDatabinding.Theming.ColorTokenGroup resolves a theme colour token to a UnityEngine.Color (four
-    // floats) written through the out pointer. The scheme remaps coloured tokens after the game has
-    // resolved them; nothing is changed unless MenuColours is set and the value looks like a float colour.
+    // The menus are orange. Gradients reach the screen through Gradient.SetKeys / set_colorKeys, and solid
+    // colours through Graphic.set_color. Orange keys and orange solids are remapped onto the scheme from
+    // the ini; every other colour is left as the game set it.
     static RR::MenuColours::Scheme menuScheme;
     static bool logMenuColours = false;
-    static bool (*colourByNameOriginal)(void*, void*, float*, void*) = nullptr;
-    static bool (*colourByIdOriginal)(void*, void*, float*, void*) = nullptr;
+    static void (*graphicSetColorOriginal)(void*, float*, void*) = nullptr;
 
-    static void MenuColourSeen(const char* kind, void* name, const float* before, const float* after) {
-        // Bounded: every distinct call site is logged at most once per name, 400 lines in all.
-        static char seen[400][64];
-        static LONG count = 0;
-        char text[64]{};
-        if (name) {
-            const int length =
-                *reinterpret_cast<int*>(reinterpret_cast<uintptr_t>(name) + RR::Offsets::String::Length);
-            const auto* chars = reinterpret_cast<const wchar_t*>(reinterpret_cast<uintptr_t>(name) +
-                                                                 RR::Offsets::String::Characters);
-            if (length > 0 && length < 60) {
-                WideCharToMultiByte(CP_UTF8, 0, chars, length, text, sizeof(text) - 1, nullptr, nullptr);
-            }
-        }
-        char key[64]{};
-        _snprintf_s(key, sizeof(key), _TRUNCATE, "%s:%s:%.2f,%.2f,%.2f", kind, text, before[0], before[1],
-                    before[2]);
-        LONG n = count;
-        for (LONG i = 0; i < n && i < 400; ++i) {
-            if (!strcmp(seen[i], key)) {
+    // Remaps the colour keys of a managed GradientColorKey[] in place. Layout: length at +0x18, elements from
+    // +0x20, each a Color (four floats) and a float time. No objects with destructors, so the SEH block is
+    // allowed here.
+    static void RemapGradientArray(uintptr_t array) {
+        __try {
+            if (array < 0x10000 || !menuScheme.enabled) {
                 return;
             }
-        }
-        if (n >= 400 || InterlockedIncrement(&count) > 400) {
-            return;
-        }
-        strcpy_s(seen[n], sizeof(seen[n]), key);
-        Log("[MenuColour] %s name=\"%s\" %.3f,%.3f,%.3f,%.3f -> %.3f,%.3f,%.3f", kind, text, before[0],
-            before[1], before[2], before[3], after[0], after[1], after[2]);
-    }
-
-    static void RemapMenuColour(const char* kind, void* name, float* colour) {
-        if (!colour || !RR::MenuColours::SaneColour(colour)) {
-            static LONG unsane = 0;
-            const LONG n = InterlockedIncrement(&unsane);
-            if (logMenuColours && (n & (n - 1)) == 0) {
-                Log("[MenuColour] %s result is not a float colour (x%ld); first bytes %08X %08X %08X %08X",
-                    kind, n, colour ? reinterpret_cast<unsigned*>(colour)[0] : 0,
-                    colour ? reinterpret_cast<unsigned*>(colour)[1] : 0,
-                    colour ? reinterpret_cast<unsigned*>(colour)[2] : 0,
-                    colour ? reinterpret_cast<unsigned*>(colour)[3] : 0);
+            const int length = *reinterpret_cast<int*>(array + 0x18);
+            if (length <= 0 || length > 32) {
+                return;
             }
-            return;
-        }
-        const float before[4] = {colour[0], colour[1], colour[2], colour[3]};
-        if (menuScheme.enabled) {
-            RR::MenuColours::Remap(menuScheme, colour);
-        }
-        if (logMenuColours) {
-            MenuColourSeen(kind, name, before, colour);
+            for (int i = 0; i < length; ++i) {
+                auto* key = reinterpret_cast<float*>(array + 0x20 + 20 * i);
+                if (RR::MenuColours::SaneColour(key) && key[4] >= 0.0f && key[4] <= 1.0001f) {
+                    RR::MenuColours::RemapGradientKey(menuScheme, key, key[4]);
+                }
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
     }
 
-    static bool ColourByName(void* group, void* name, float* colour, void* method) {
-        const bool found = colourByNameOriginal(group, name, colour, method);
-        static LONG byNameCalls = 0;
-        const LONG calls = InterlockedIncrement(&byNameCalls);
-        if (logMenuColours && (calls & (calls - 1)) == 0) {
-            Log("[MenuColour] byName calls>=%ld", calls);
+    static void GraphicSetColor(void* self, float* colour, void* method) {
+        if (menuScheme.enabled && colour && RR::MenuColours::SaneColour(colour)) {
+            RR::MenuColours::RemapSolid(menuScheme, colour);
         }
-        if (found) {
-            RemapMenuColour("byName", name, colour);
-        }
-        return found;
-    }
-
-    static bool ColourById(void* group, void* id, float* colour, void* method) {
-        const bool found = colourByIdOriginal(group, id, colour, method);
-        static LONG byIdCalls = 0;
-        const LONG calls = InterlockedIncrement(&byIdCalls);
-        if (logMenuColours && (calls & (calls - 1)) == 0) {
-            Log("[MenuColour] byId calls>=%ld", calls);
-        }
-        if (found) {
-            RemapMenuColour("byId", nullptr, colour);
-        }
-        return found;
+        graphicSetColorOriginal(self, colour, method);
     }
 
     // ---- gradient and palette logging -----------------------------------------------------------------
@@ -1018,13 +967,19 @@ namespace RR::Patches {
 
     static uintptr_t GradientSetKeys(uintptr_t self, uintptr_t colourKeys, uintptr_t alphaKeys,
                                      uintptr_t method) {
-        LogGradient("SetKeys", colourKeys);
+        RemapGradientArray(colourKeys);
+        if (logMenuColours) {
+            LogGradient("SetKeys", colourKeys);
+        }
         return setKeysOriginal(self, colourKeys, alphaKeys, method);
     }
 
     static uintptr_t GradientSetColorKeys(uintptr_t self, uintptr_t colourKeys, uintptr_t method,
                                           uintptr_t extra) {
-        LogGradient("set_colorKeys", colourKeys);
+        RemapGradientArray(colourKeys);
+        if (logMenuColours) {
+            LogGradient("set_colorKeys", colourKeys);
+        }
         return setColorKeysOriginal(self, colourKeys, method, extra);
     }
 
@@ -1109,7 +1064,6 @@ namespace RR::Patches {
         {0xA4815F0, "RRUI.ToggleTheme.Apply"},
         {0xA480AA0, "RRUI.SwitchTheme.Apply"},
         {0xA481310, "RRUI.TilerTheme.Apply"},
-        {0xB5B9150, "UI.Graphic.set_color"},
         {0xB5B72E0, "UI.Graphic.OnEnable"},
     };
     constexpr size_t probeCount = sizeof(probeTargets) / sizeof(probeTargets[0]);
@@ -1338,17 +1292,7 @@ namespace RR::Patches {
                 return 5;
             }
         }
-        // Optional: failures here only cost the menu colours, never the rest of the patch.
         if (menuScheme.enabled || logMenuColours) {
-            const bool byName =
-                Hook(RR::Methods::Theme::ColorTokenByName, reinterpret_cast<void*>(ColourByName),
-                     reinterpret_cast<void**>(&colourByNameOriginal), "ColorTokenGroup.ByName");
-            const bool byId = Hook(RR::Methods::Theme::ColorTokenById, reinterpret_cast<void*>(ColourById),
-                                   reinterpret_cast<void**>(&colourByIdOriginal), "ColorTokenGroup.ById");
-            Log("[MenuColour] hooks: byName=%d byId=%d scheme=%s log=%d", byName ? 1 : 0, byId ? 1 : 0,
-                menuScheme.enabled ? "on" : "off", logMenuColours ? 1 : 0);
-        }
-        if (logMenuColours) {
             const bool keys = Hook(RR::Methods::Gradients::SetKeys, reinterpret_cast<void*>(GradientSetKeys),
                                    reinterpret_cast<void**>(&setKeysOriginal), "Gradient.SetKeys");
             const bool colourKeys =
@@ -1360,8 +1304,13 @@ namespace RR::Patches {
             const bool background = Hook(
                 RR::Methods::Gradients::PaletteBackground, reinterpret_cast<void*>(PaletteBackground),
                 reinterpret_cast<void**>(&paletteBackgroundOriginal), "Palette.GetBackgroundPaletteData");
-            Log("[Palette] hooks: SetKeys=%d set_colorKeys=%d fg=%d bg=%d", keys ? 1 : 0, colourKeys ? 1 : 0,
-                foreground ? 1 : 0, background ? 1 : 0);
+            const bool solid =
+                Hook(RR::Methods::Gradients::GraphicSetColor, reinterpret_cast<void*>(GraphicSetColor),
+                     reinterpret_cast<void**>(&graphicSetColorOriginal), "Graphic.set_color");
+            Log("[MenuColour] hooks: SetKeys=%d set_colorKeys=%d set_color=%d palette fg=%d bg=%d scheme=%s "
+                "log=%d",
+                keys ? 1 : 0, colourKeys ? 1 : 0, solid ? 1 : 0, foreground ? 1 : 0, background ? 1 : 0,
+                menuScheme.enabled ? "on" : "off", logMenuColours ? 1 : 0);
         }
         if (settings.probeTheme) {
             const int failed = InstallProbes(std::make_index_sequence<probeCount>{});

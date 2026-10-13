@@ -131,14 +131,6 @@ namespace RR::Methods::Referee {
     inline constexpr uintptr_t ObservedFault2 = 0x216D035;
 }
 
-namespace RR::Methods::Theme {
-    // MVVM-Databinding.dll, found by name through the live method table (no signatures from
-    // another build): bool TryGetColorTokenByName(this, string name, out Color color) and
-    // bool TryGetColorTokenById(this, id, out Color color), on MVVMDatabinding.Theming.ColorTokenGroup.
-    inline constexpr uintptr_t ColorTokenByName = 0x8B96270;
-    inline constexpr uintptr_t ColorTokenById = 0x8B95FB0;
-}
-
 namespace RR::Methods::Gradients {
     // UnityEngine.Gradient (CoreModule): SetKeys(this, GradientColorKey[], GradientAlphaKey[]) and
     // set_colorKeys(this, GradientColorKey[]). RRUI.Theme.Palette: GetForegroundColor(this, type) returns a
@@ -147,4 +139,6 @@ namespace RR::Methods::Gradients {
     inline constexpr uintptr_t SetColorKeys = 0xB3EE900;
     inline constexpr uintptr_t PaletteForeground = 0xA47B6D0;
     inline constexpr uintptr_t PaletteBackground = 0xA47B2B0;
+    // UnityEngine.UI.Graphic.set_color(this, Color): the final step for solid UI colours.
+    inline constexpr uintptr_t GraphicSetColor = 0xB5B9150;
 }

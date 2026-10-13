@@ -133,6 +133,41 @@ namespace RR::MenuColours {
         return true;
     }
 
+    // The game's own menu colour is orange (observed gradient keys run from hue 0.03 to 0.09, saturation
+    // 0.5 to 1; pure red sits at hue 0 and yellow at 0.17, so both are excluded). Only that family is
+    // recoloured, so avatar swatches, effects and other UI keep their colours.
+    inline bool IsMenuOrange(const Hsv& hsv) {
+        return hsv.s >= 0.4f && hsv.v >= 0.5f && (hsv.h >= 0.015f && hsv.h <= 0.13f);
+    }
+
+    inline void Tint(const Rgb& target, float brightness, float* rgba) {
+        const float peak = (std::max)({target.r, target.g, target.b, 0.01f});
+        const float scale = (std::min)((std::max)(brightness / peak, 0.3f), 1.5f);
+        rgba[0] = (std::min)(target.r * scale, 1.0f);
+        rgba[1] = (std::min)(target.g * scale, 1.0f);
+        rgba[2] = (std::min)(target.b * scale, 1.0f);
+    }
+
+    // A solid menu colour takes the accent.
+    inline bool RemapSolid(const Scheme& scheme, float* rgba) {
+        const Hsv hsv = ToHsv({rgba[0], rgba[1], rgba[2]});
+        if (!IsMenuOrange(hsv)) {
+            return false;
+        }
+        Tint(scheme.accent, hsv.v, rgba);
+        return true;
+    }
+
+    // A gradient key takes the scheme gradient at its own position (0 = start, 1 = end).
+    inline bool RemapGradientKey(const Scheme& scheme, float* rgba, float time) {
+        const Hsv hsv = ToHsv({rgba[0], rgba[1], rgba[2]});
+        if (!IsMenuOrange(hsv)) {
+            return false;
+        }
+        Tint(AlongGradient(scheme, time), hsv.v, rgba);
+        return true;
+    }
+
     // A value that really is a float colour component. Guards against reading a different struct.
     inline bool SaneColour(const float* rgba) {
         for (int i = 0; i < 4; ++i) {
