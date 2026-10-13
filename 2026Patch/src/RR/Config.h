@@ -13,6 +13,8 @@ namespace RR::Config {
         std::string voiceKeyXml;
         int framesPerSecond = 0;
         bool verbose = false;
+        // Writes 2026dump.txt (class/method names and RVAs) once the game has started.
+        bool dumpIl2Cpp = false;
     };
 
     // Win32 INI reads return the fallback for an absent field. Empty routing
@@ -84,8 +86,10 @@ namespace RR::Config {
         }
         if (!ReadFlag(path, L"DisableCertificatePinning", settings.network.disableCertificatePinning) ||
             !ReadFlag(path, L"AllowUnsignedImages", settings.network.allowUnsignedImages) ||
-            !ReadFlag(path, L"EnableTracing", settings.verbose)) {
-            error = "DisableCertificatePinning, AllowUnsignedImages and EnableTracing must be true or false.";
+            !ReadFlag(path, L"EnableTracing", settings.verbose) ||
+            !ReadFlag(path, L"DumpIl2Cpp", settings.dumpIl2Cpp)) {
+            error = "DisableCertificatePinning, AllowUnsignedImages, EnableTracing and DumpIl2Cpp must be "
+                    "true or false.";
             return false;
         }
         settings.framesPerSecond =
