@@ -138,3 +138,13 @@ namespace RR::Methods::Theme {
     inline constexpr uintptr_t ColorTokenByName = 0x8B96270;
     inline constexpr uintptr_t ColorTokenById = 0x8B95FB0;
 }
+
+namespace RR::Methods::Gradients {
+    // UnityEngine.Gradient (CoreModule): SetKeys(this, GradientColorKey[], GradientAlphaKey[]) and
+    // set_colorKeys(this, GradientColorKey[]). RRUI.Theme.Palette: GetForegroundColor(this, type) returns a
+    // Color through a hidden pointer; GetBackgroundPaletteData(this, type, out, out) is logged raw.
+    inline constexpr uintptr_t SetKeys = 0xB3EE230;
+    inline constexpr uintptr_t SetColorKeys = 0xB3EE900;
+    inline constexpr uintptr_t PaletteForeground = 0xA47B6D0;
+    inline constexpr uintptr_t PaletteBackground = 0xA47B2B0;
+}

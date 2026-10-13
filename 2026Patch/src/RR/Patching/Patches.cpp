@@ -949,6 +949,139 @@ namespace RR::Patches {
         return found;
     }
 
+    // ---- gradient and palette logging -----------------------------------------------------------------
+    // Diagnostic (LogMenuColours=true). Nothing is changed: each hook forwards its integer registers to the
+    // original, then records what it saw. Managed array layout: length at +0x18, elements from +0x20; a
+    // GradientColorKey is a Color (four floats) followed by a float time, 20 bytes.
+    static uintptr_t (*setKeysOriginal)(uintptr_t, uintptr_t, uintptr_t, uintptr_t) = nullptr;
+    static uintptr_t (*setColorKeysOriginal)(uintptr_t, uintptr_t, uintptr_t, uintptr_t) = nullptr;
+    static float* (*paletteForegroundOriginal)(float*, void*, int, void*) = nullptr;
+    static uintptr_t (*paletteBackgroundOriginal)(uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                                                  uintptr_t) = nullptr;
+
+    // No objects with destructors, so the SEH block is allowed here.
+    static int ReadGradientKeys(uintptr_t array, float (*keys)[5], int capacity) {
+        __try {
+            if (array < 0x10000) {
+                return -1;
+            }
+            const int length = *reinterpret_cast<int*>(array + 0x18);
+            if (length < 0 || length > 64) {
+                return -1;
+            }
+            for (int i = 0; i < length && i < capacity; ++i) {
+                const auto* element = reinterpret_cast<const float*>(array + 0x20 + 20 * i);
+                for (int k = 0; k < 5; ++k) {
+                    keys[i][k] = element[k];
+                }
+            }
+            return length;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return -1;
+        }
+    }
+
+    static void LogGradient(const char* source, uintptr_t array) {
+        static unsigned seen[64] = {};
+        static LONG count = 0;
+        float keys[8][5] = {};
+        const int length = ReadGradientKeys(array, keys, 8);
+        if (length < 0) {
+            return;
+        }
+        unsigned hash = 2166136261u;
+        for (int i = 0; i < length && i < 8; ++i) {
+            for (int k = 0; k < 5; ++k) {
+                unsigned bits;
+                memcpy(&bits, &keys[i][k], 4);
+                hash = (hash ^ bits) * 16777619u;
+            }
+        }
+        const LONG n = count;
+        for (LONG i = 0; i < n && i < 64; ++i) {
+            if (seen[i] == hash) {
+                return;
+            }
+        }
+        if (n >= 64 || InterlockedIncrement(&count) > 64) {
+            return;
+        }
+        seen[n] = hash;
+        char text[512]{};
+        int used = 0;
+        for (int i = 0; i < length && i < 8 && used < 480; ++i) {
+            used += _snprintf_s(text + used, sizeof(text) - used, _TRUNCATE, " [%.3f %.3f %.3f %.3f t=%.3f]",
+                                keys[i][0], keys[i][1], keys[i][2], keys[i][3], keys[i][4]);
+        }
+        Log("[Gradient] %s n=%d%s", source, length, text);
+    }
+
+    static uintptr_t GradientSetKeys(uintptr_t self, uintptr_t colourKeys, uintptr_t alphaKeys,
+                                     uintptr_t method) {
+        LogGradient("SetKeys", colourKeys);
+        return setKeysOriginal(self, colourKeys, alphaKeys, method);
+    }
+
+    static uintptr_t GradientSetColorKeys(uintptr_t self, uintptr_t colourKeys, uintptr_t method,
+                                          uintptr_t extra) {
+        LogGradient("set_colorKeys", colourKeys);
+        return setColorKeysOriginal(self, colourKeys, method, extra);
+    }
+
+    static bool ReadFloats(const void* address, float* out, int count) {
+        __try {
+            if (reinterpret_cast<uintptr_t>(address) < 0x10000) {
+                return false;
+            }
+            memcpy(out, address, static_cast<size_t>(count) * 4);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    static float* PaletteForeground(float* result, void* self, int type, void* method) {
+        float* colour = paletteForegroundOriginal(result, self, type, method);
+        static unsigned seen[256] = {};
+        static LONG count = 0;
+        float value[4] = {};
+        if (logMenuColours && ReadFloats(colour, value, 4)) {
+            unsigned a, b, c;
+            memcpy(&a, &value[0], 4);
+            memcpy(&b, &value[1], 4);
+            memcpy(&c, &value[2], 4);
+            const unsigned hash = (static_cast<unsigned>(type) * 2654435761u) ^ a ^ (b * 31u) ^ (c * 131u);
+            const LONG n = count;
+            bool known = false;
+            for (LONG i = 0; i < n && i < 256; ++i) {
+                known = known || seen[i] == hash;
+            }
+            if (!known && n < 256 && InterlockedIncrement(&count) <= 256) {
+                seen[n] = hash;
+                Log("[Palette] foreground type=%d %.3f %.3f %.3f %.3f", type, value[0], value[1], value[2],
+                    value[3]);
+            }
+        }
+        return colour;
+    }
+
+    static uintptr_t PaletteBackground(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_t e) {
+        const uintptr_t result = paletteBackgroundOriginal(a, b, c, d, e);
+        static LONG logged = 0;
+        if (logMenuColours && logged < 80 && InterlockedIncrement(&logged) <= 80) {
+            float one[4] = {}, two[4] = {}, three[4] = {};
+            const bool haveC = ReadFloats(reinterpret_cast<void*>(c), one, 4);
+            const bool haveD = ReadFloats(reinterpret_cast<void*>(d), two, 4);
+            const bool haveRet = ReadFloats(reinterpret_cast<void*>(result), three, 4);
+            Log("[Palette] background type=%d result=%llX c=%s %.3f %.3f %.3f %.3f d=%s %.3f %.3f %.3f %.3f "
+                "ret=%s %.3f %.3f %.3f %.3f",
+                static_cast<int>(b), static_cast<unsigned long long>(result), haveC ? "ok" : "--", one[0],
+                one[1], one[2], one[3], haveD ? "ok" : "--", two[0], two[1], two[2], two[3],
+                haveRet ? "ok" : "--", three[0], three[1], three[2], three[3]);
+        }
+        return result;
+    }
+
     // ---- theme probes ---------------------------------------------------------------------------------
     // Diagnostic only (ProbeTheme=true): each target forwards its four integer registers to the original
     // and counts the call. The count is logged on the 1st, 2nd, 4th, 8th... call, so the final log line per
@@ -1214,6 +1347,21 @@ namespace RR::Patches {
                                    reinterpret_cast<void**>(&colourByIdOriginal), "ColorTokenGroup.ById");
             Log("[MenuColour] hooks: byName=%d byId=%d scheme=%s log=%d", byName ? 1 : 0, byId ? 1 : 0,
                 menuScheme.enabled ? "on" : "off", logMenuColours ? 1 : 0);
+        }
+        if (logMenuColours) {
+            const bool keys = Hook(RR::Methods::Gradients::SetKeys, reinterpret_cast<void*>(GradientSetKeys),
+                                   reinterpret_cast<void**>(&setKeysOriginal), "Gradient.SetKeys");
+            const bool colourKeys =
+                Hook(RR::Methods::Gradients::SetColorKeys, reinterpret_cast<void*>(GradientSetColorKeys),
+                     reinterpret_cast<void**>(&setColorKeysOriginal), "Gradient.set_colorKeys");
+            const bool foreground =
+                Hook(RR::Methods::Gradients::PaletteForeground, reinterpret_cast<void*>(PaletteForeground),
+                     reinterpret_cast<void**>(&paletteForegroundOriginal), "Palette.GetForegroundColor");
+            const bool background = Hook(
+                RR::Methods::Gradients::PaletteBackground, reinterpret_cast<void*>(PaletteBackground),
+                reinterpret_cast<void**>(&paletteBackgroundOriginal), "Palette.GetBackgroundPaletteData");
+            Log("[Palette] hooks: SetKeys=%d set_colorKeys=%d fg=%d bg=%d", keys ? 1 : 0, colourKeys ? 1 : 0,
+                foreground ? 1 : 0, background ? 1 : 0);
         }
         if (settings.probeTheme) {
             const int failed = InstallProbes(std::make_index_sequence<probeCount>{});
