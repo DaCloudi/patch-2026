@@ -372,6 +372,18 @@ namespace Il2CppDump {
         }
     }
 
+    // Reads slot `index` of a method pointer array as an RVA (0 for a foreign pointer). Kept apart
+    // from the caller so the SEH block sits in a function without objects to unwind.
+    inline bool ReadMethodRva(const ImageInfo& image, uintptr_t pointers, uint32_t index, uint32_t* rva) {
+        __try {
+            const uintptr_t value = reinterpret_cast<const uintptr_t*>(pointers)[index];
+            *rva = AddressInImage(image, value) ? static_cast<uint32_t>(value - image.base) : 0;
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
     inline void WriteMethodTables(HMODULE game, const std::wstring& directory) {
         const auto* base = reinterpret_cast<const unsigned char*>(game);
         const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
@@ -434,10 +446,7 @@ namespace Il2CppDump {
                     static_cast<unsigned long long>(total));
             for (uint32_t k = 0; k < count; ++k) {
                 uint32_t rva = 0;
-                __try {
-                    const uintptr_t value = reinterpret_cast<const uintptr_t*>(pointers)[k];
-                    rva = AddressInImage(image, value) ? static_cast<uint32_t>(value - image.base) : 0;
-                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                if (!ReadMethodRva(image, pointers, k, &rva)) {
                     ++failed;
                 }
                 fwrite(&rva, sizeof(rva), 1, data);
