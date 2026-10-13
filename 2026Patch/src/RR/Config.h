@@ -2,7 +2,6 @@
 
 #include <windows.h>
 #include <fstream>
-#include "MenuColours.h"
 #include "NetworkConfig.h"
 
 namespace RR::Config {
@@ -14,18 +13,6 @@ namespace RR::Config {
         std::string voiceKeyXml;
         int framesPerSecond = 0;
         bool verbose = false;
-        // Writes 2026dump.txt (class/method names and RVAs) once the game has started.
-        bool dumpIl2Cpp = false;
-        // Writes 2026metadata.dat: the real IL2CPP metadata, copied out of the running game.
-        bool dumpMetadata = false;
-        // Writes 2026modules.txt and 2026methodptrs.bin: every method's native address, by assembly.
-        bool dumpMethods = false;
-        // Five #rrggbb values (four gradient stops, then the accent). Empty keeps the game's colours.
-        MenuColours::Scheme menuColours;
-        // Logs each menu colour name the game looks up, with its value, once.
-        bool logMenuColours = false;
-        // Counts calls to the theme and UI colour entry points, to learn which paths the menus use.
-        bool probeTheme = false;
     };
 
     // Win32 INI reads return the fallback for an absent field. Empty routing
@@ -97,20 +84,8 @@ namespace RR::Config {
         }
         if (!ReadFlag(path, L"DisableCertificatePinning", settings.network.disableCertificatePinning) ||
             !ReadFlag(path, L"AllowUnsignedImages", settings.network.allowUnsignedImages) ||
-            !ReadFlag(path, L"EnableTracing", settings.verbose) ||
-            !ReadFlag(path, L"DumpIl2Cpp", settings.dumpIl2Cpp) ||
-            !ReadFlag(path, L"DumpMetadata", settings.dumpMetadata) ||
-            !ReadFlag(path, L"DumpMethods", settings.dumpMethods) ||
-            !ReadFlag(path, L"LogMenuColours", settings.logMenuColours) ||
-            !ReadFlag(path, L"ProbeTheme", settings.probeTheme)) {
-            error = "DisableCertificatePinning, AllowUnsignedImages, EnableTracing and DumpIl2Cpp must be "
-                    "true or false.";
-            return false;
-        }
-        std::string menuColours;
-        if (!ReadIni(path, L"MenuColours", menuColours) ||
-            !MenuColours::Parse(menuColours, settings.menuColours)) {
-            error = "MenuColours must be empty or five comma-separated #rrggbb values.";
+            !ReadFlag(path, L"EnableTracing", settings.verbose)) {
+            error = "DisableCertificatePinning, AllowUnsignedImages and EnableTracing must be true or false.";
             return false;
         }
         settings.framesPerSecond =

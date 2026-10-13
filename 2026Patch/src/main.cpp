@@ -1,7 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include "RR/Patching/Patches.h"
 #include "RR/BuildGuard.h"
-#include "Utils/Il2CppDump.h"
 #include "Utils/Logging.h"
 
 // DllMain runs with the Windows loader lock held. File/configuration work,
@@ -44,11 +43,6 @@ static DWORD WINAPI InitializePatch(void* parameter) {
     if (!RR::BuildGuard::SupportsLoadedClient()) {
         PatchLogging::Log("[Build] fingerprint mismatch; no hooks installed");
         return 1;
-    }
-
-    if (settings.dumpIl2Cpp || settings.dumpMetadata || settings.dumpMethods) {
-        // Independent of the hooks: waits for IL2CPP on its own thread and writes beside the DLL.
-        Il2CppDump::Start(directory, settings.dumpIl2Cpp, settings.dumpMetadata, settings.dumpMethods);
     }
 
     // File diagnostics require no console. AllocConsole can steal Unity's focus

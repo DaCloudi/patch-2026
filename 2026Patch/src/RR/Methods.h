@@ -130,21 +130,3 @@ namespace RR::Methods::Referee {
     inline constexpr uintptr_t ObservedFault1 = 0x62BB0B;
     inline constexpr uintptr_t ObservedFault2 = 0x216D035;
 }
-
-namespace RR::Methods::Gradients {
-    // UnityEngine.Gradient (CoreModule): SetKeys(this, GradientColorKey[], GradientAlphaKey[]) and
-    // set_colorKeys(this, GradientColorKey[]). RRUI.Theme.Palette: GetForegroundColor(this, type) returns a
-    // Color through a hidden pointer; GetBackgroundPaletteData(this, type, out, out) is logged raw.
-    inline constexpr uintptr_t SetKeys = 0xB3EE230;
-    inline constexpr uintptr_t SetColorKeys = 0xB3EE900;
-    inline constexpr uintptr_t PaletteForeground = 0xA47B6D0;
-    inline constexpr uintptr_t PaletteBackground = 0xA47B2B0;
-    // Solid UI colours. Each takes (this, Color) with the Color passed by pointer; Selectable.set_colors
-    // takes a ColorBlock (five Colors, then multiplier and fade duration) the same way.
-    inline constexpr uintptr_t GraphicSetColor = 0xB5B9150;
-    inline constexpr uintptr_t CanvasRendererSetColor = 0xB7BAA20;
-    inline constexpr uintptr_t TextSetColor = 0xB2B5B90;
-    inline constexpr uintptr_t TextSetFaceColor = 0xB2B5ED0;
-    inline constexpr uintptr_t TextSetOutlineColor = 0xB2B6A70;
-    inline constexpr uintptr_t SelectableSetColors = 0xB7E6AA0;
-}
