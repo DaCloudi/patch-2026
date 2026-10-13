@@ -867,37 +867,6 @@ namespace RR::Patches {
     // the ini; every other colour is left as the game set it.
     static RR::MenuColours::Scheme menuScheme;
     static bool logMenuColours = false;
-    // Diagnostic (LogMenuColours=true): after remapping, list light colours that are still light and not pure
-    // white, so surfaces the patch missed show up in the log with the setter that carried them.
-    static void NoteLeftover(const char* where, const float* colour) {
-        if (!logMenuColours || !menuScheme.dark) {
-            return;
-        }
-        const float high = (std::max)({colour[0], colour[1], colour[2]});
-        const float low = (std::min)({colour[0], colour[1], colour[2]});
-        if (high < 0.7f || (colour[0] > 0.995f && colour[1] > 0.995f && colour[2] > 0.995f)) {
-            return;
-        }
-        static unsigned seen[96] = {};
-        static LONG count = 0;
-        const unsigned hash = (static_cast<unsigned>(colour[0] * 255.0f) << 16) ^
-                              (static_cast<unsigned>(colour[1] * 255.0f) << 8) ^
-                              static_cast<unsigned>(colour[2] * 255.0f) ^
-                              (static_cast<unsigned>(where[0]) << 24);
-        const LONG n = count;
-        for (LONG i = 0; i < n && i < 96; ++i) {
-            if (seen[i] == hash) {
-                return;
-            }
-        }
-        if (n >= 96 || InterlockedIncrement(&count) > 96) {
-            return;
-        }
-        seen[n] = hash;
-        Log("[Leftover] %s %.3f %.3f %.3f (saturation %.2f)", where, colour[0], colour[1], colour[2],
-            high > 0 ? (high - low) / high : 0.0f);
-    }
-
     // Remaps the colour keys of a managed GradientColorKey[] in place. Layout: length at +0x18, elements from
     // +0x20, each a Color (four floats) and a float time. No objects with destructors, so the SEH block is
     // allowed here.
@@ -914,7 +883,6 @@ namespace RR::Patches {
                 auto* key = reinterpret_cast<float*>(array + 0x20 + 20 * i);
                 if (RR::MenuColours::SaneColour(key) && key[4] >= 0.0f && key[4] <= 1.0001f) {
                     RR::MenuColours::RemapGradientKey(menuScheme, key, key[4]);
-                    NoteLeftover("Gradient", key);
                 }
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -926,22 +894,20 @@ namespace RR::Patches {
     struct ColourSetterTarget {
         uintptr_t rva;
         const char* name;
-        bool text;
     };
     static const ColourSetterTarget colourSetterTargets[] = {
-        {RR::Methods::Gradients::GraphicSetColor, "Graphic.set_color", false},
-        {RR::Methods::Gradients::CanvasRendererSetColor, "CanvasRenderer.SetColor", false},
-        {RR::Methods::Gradients::TextSetColor, "TMP_Text.set_color", true},
-        {RR::Methods::Gradients::TextSetFaceColor, "TMP_Text.set_faceColor", true},
-        {RR::Methods::Gradients::TextSetOutlineColor, "TMP_Text.set_outlineColor", false},
+        {RR::Methods::Gradients::GraphicSetColor, "Graphic.set_color"},
+        {RR::Methods::Gradients::CanvasRendererSetColor, "CanvasRenderer.SetColor"},
+        {RR::Methods::Gradients::TextSetColor, "TMP_Text.set_color"},
+        {RR::Methods::Gradients::TextSetFaceColor, "TMP_Text.set_faceColor"},
+        {RR::Methods::Gradients::TextSetOutlineColor, "TMP_Text.set_outlineColor"},
     };
     constexpr size_t colourSetterCount = sizeof(colourSetterTargets) / sizeof(colourSetterTargets[0]);
     static void (*colourSetterOriginal[colourSetterCount])(void*, float*, void*) = {};
 
     template <size_t I> static void ColourSetter(void* self, float* colour, void* method) {
         if (menuScheme.enabled && colour && RR::MenuColours::SaneColour(colour)) {
-            RR::MenuColours::RemapUi(menuScheme, colour, colourSetterTargets[I].text);
-            NoteLeftover(colourSetterTargets[I].name, colour);
+            RR::MenuColours::RemapSolid(menuScheme, colour);
         }
         colourSetterOriginal[I](self, colour, method);
     }
@@ -956,53 +922,6 @@ namespace RR::Patches {
         return installed;
     }
 
-    // Colour getters (hidden return pointer). Remap the result in place, but only for an opaque, plainly
-    // float colour: the shared Graphic.get_color body also serves unrelated getters of other types.
-    struct ColourGetterTarget {
-        uintptr_t rva;
-        const char* name;
-        bool text;
-    };
-    static const ColourGetterTarget colourGetterTargets[] = {
-        {RR::Methods::Gradients::GraphicGetColor, "Graphic.get_color", false},
-        {RR::Methods::Gradients::TextGetColor, "TMP_Text.get_color", true},
-        {RR::Methods::Gradients::TextGetFaceColor, "TMP_Text.get_faceColor", true},
-    };
-    constexpr size_t colourGetterCount = sizeof(colourGetterTargets) / sizeof(colourGetterTargets[0]);
-    static float* (*colourGetterOriginal[colourGetterCount])(float*, void*, void*) = {};
-
-    template <size_t I> static float* ColourGetter(float* result, void* self, void* method) {
-        float* colour = colourGetterOriginal[I](result, self, method);
-        if (menuScheme.enabled && colour && RR::MenuColours::SaneColour(colour) && colour[3] >= 0.999f) {
-            RR::MenuColours::RemapUi(menuScheme, colour, colourGetterTargets[I].text);
-            NoteLeftover(colourGetterTargets[I].name, colour);
-        }
-        return colour;
-    }
-
-    template <size_t... I> static int InstallColourGetters(std::index_sequence<I...>) {
-        int installed = 0;
-        ((installed += Hook(colourGetterTargets[I].rva, reinterpret_cast<void*>(&ColourGetter<I>),
-                            reinterpret_cast<void**>(&colourGetterOriginal[I]), colourGetterTargets[I].name)
-                           ? 1
-                           : 0),
-         ...);
-        return installed;
-    }
-
-    // VertexHelper.AddVert(this, Vector3*, Color32, Vector4*, MethodInfo): the colour of every uGUI Image and
-    // RawImage vertex, whatever set it (a setter, a tween, or the prefab's own stored colour, which is never
-    // read through a call). The Color32 is packed in a register; the remap keeps alpha, leaves pure white
-    // (the default sprite tint) alone and is idempotent for colours the setters already changed.
-    static void (*addVertOriginal)(void*, void*, uint32_t, void*, void*) = nullptr;
-
-    static void AddVertex(void* self, void* position, uint32_t colour, void* uv0, void* method) {
-        if (menuScheme.enabled) {
-            RR::MenuColours::RemapVertex(menuScheme, colour);
-        }
-        addVertOriginal(self, position, colour, uv0, method);
-    }
-
     // Selectable.set_colors(this, ColorBlock): normal, highlighted, pressed, selected and disabled colours,
     // 16 bytes each, so the tab and button states are recoloured as a set.
     static void (*selectableSetColorsOriginal)(void*, float*, void*) = nullptr;
@@ -1012,8 +931,7 @@ namespace RR::Patches {
             for (int i = 0; i < 5; ++i) {
                 float* colour = block + 4 * i;
                 if (RR::MenuColours::SaneColour(colour)) {
-                    RR::MenuColours::RemapUi(menuScheme, colour, false);
-                    NoteLeftover("Selectable.colors", colour);
+                    RR::MenuColours::RemapSolid(menuScheme, colour);
                 }
             }
         }
@@ -1421,10 +1339,6 @@ namespace RR::Patches {
                 Hook(RR::Methods::Gradients::SetColorKeys, reinterpret_cast<void*>(GradientSetColorKeys),
                      reinterpret_cast<void**>(&setColorKeysOriginal), "Gradient.set_colorKeys");
             const int solid = InstallColourSetters(std::make_index_sequence<colourSetterCount>{});
-            const int getters = InstallColourGetters(std::make_index_sequence<colourGetterCount>{});
-            const bool vertices =
-                Hook(RR::Methods::Gradients::VertexAddVert, reinterpret_cast<void*>(AddVertex),
-                     reinterpret_cast<void**>(&addVertOriginal), "VertexHelper.AddVert");
             const bool selectable = Hook(
                 RR::Methods::Gradients::SelectableSetColors, reinterpret_cast<void*>(SelectableSetColors),
                 reinterpret_cast<void**>(&selectableSetColorsOriginal), "Selectable.set_colors");
@@ -1437,12 +1351,12 @@ namespace RR::Patches {
                     RR::Methods::Gradients::PaletteBackground, reinterpret_cast<void*>(PaletteBackground),
                     reinterpret_cast<void**>(&paletteBackgroundOriginal), "Palette.GetBackgroundPaletteData");
             }
-            Log("[MenuColour] hooks: SetKeys=%d set_colorKeys=%d solid=%d/%d getters=%d/%d vertices=%d "
-                "selectable=%d "
-                "palette fg=%d bg=%d scheme=%s log=%d",
-                keys ? 1 : 0, colourKeys ? 1 : 0, solid, static_cast<int>(colourSetterCount), getters,
-                static_cast<int>(colourGetterCount), vertices ? 1 : 0, selectable ? 1 : 0, foreground ? 1 : 0,
-                background ? 1 : 0, menuScheme.enabled ? "on" : "off", logMenuColours ? 1 : 0);
+            Log("[MenuColour] hooks: SetKeys=%d set_colorKeys=%d solid=%d/%d selectable=%d palette fg=%d "
+                "bg=%d "
+                "scheme=%s log=%d",
+                keys ? 1 : 0, colourKeys ? 1 : 0, solid, static_cast<int>(colourSetterCount),
+                selectable ? 1 : 0, foreground ? 1 : 0, background ? 1 : 0, menuScheme.enabled ? "on" : "off",
+                logMenuColours ? 1 : 0);
         }
         if (settings.probeTheme) {
             const int failed = InstallProbes(std::make_index_sequence<probeCount>{});

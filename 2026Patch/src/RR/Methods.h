@@ -147,16 +147,4 @@ namespace RR::Methods::Gradients {
     inline constexpr uintptr_t TextSetFaceColor = 0xB2B5ED0;
     inline constexpr uintptr_t TextSetOutlineColor = 0xB2B6A70;
     inline constexpr uintptr_t SelectableSetColors = 0xB7E6AA0;
-    // Colour getters, which return a Color through a hidden pointer: (ret, this, MethodInfo). Panels coloured
-    // by their prefab are read back here when they are drawn. Graphic.get_color shares its body with 35 other
-    // trivial getters (GUIDs, longs, palette colours), so a result is only touched when it is plainly an
-    // opaque float colour.
-    // UnityEngine.UI.VertexHelper.AddVert(Vector3 position, Color32 color, Vector4 uv0): every uGUI Image
-    // and RawImage quad passes its vertex colour through here, whatever set it. Of the four AddVert
-    // overloads this is the 3-parameter one (metadata order matches ascending address: 8, 6, 3, 1
-    // parameters). The Color32 arrives packed in the third register, the Vector3 and Vector4 by pointer.
-    inline constexpr uintptr_t VertexAddVert = 0xB803770;
-    inline constexpr uintptr_t GraphicGetColor = 0xF94070;
-    inline constexpr uintptr_t TextGetColor = 0xB2B4710;
-    inline constexpr uintptr_t TextGetFaceColor = 0xB2B4810;
 }

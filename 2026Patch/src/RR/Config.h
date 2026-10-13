@@ -113,12 +113,6 @@ namespace RR::Config {
             error = "MenuColours must be empty or five comma-separated #rrggbb values.";
             return false;
         }
-        std::string menuMode;
-        if (!ReadIni(path, L"MenuMode", menuMode) ||
-            !MenuColours::ApplyMode(menuMode, settings.menuColours)) {
-            error = "MenuMode must be empty, light or dark.";
-            return false;
-        }
         settings.framesPerSecond =
             static_cast<int>(GetPrivateProfileIntW(L"config", L"FramesPerSecond", 0, path.c_str()));
         if (settings.framesPerSecond < 0 || settings.framesPerSecond > 60) {

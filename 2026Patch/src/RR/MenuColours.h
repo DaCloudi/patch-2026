@@ -8,10 +8,6 @@
 // Menu colour scheme: four gradient stops and an accent, as #rrggbb. The launcher writes the same five
 // values it saves to the account. This file holds only the parsing and the colour maths, so it has no
 // game dependencies.
-//
-// Two modes. Light (the default) recolours only the game's orange: gradients and solid colours take the
-// scheme, everything else keeps the game's colours. Dark additionally turns light, slightly tinted
-// surfaces near-black and dark text white, and uses the scheme colours exactly as given.
 namespace RR::MenuColours {
     constexpr int Count = 5;
 
@@ -21,7 +17,6 @@ namespace RR::MenuColours {
 
     struct Scheme {
         bool enabled = false;
-        bool dark = false;
         Rgb stops[4];
         Rgb accent;
     };
@@ -83,36 +78,6 @@ namespace RR::MenuColours {
         return true;
     }
 
-    // The built-in dark scheme (muted purples), used when MenuMode=dark and no MenuColours are given.
-    inline Scheme DarkScheme() {
-        Scheme scheme;
-        Parse("#383050,#41385c,#4b4168,#554a74,#4b4168", scheme);
-        scheme.dark = true;
-        return scheme;
-    }
-
-    // MenuMode: empty or "light" for the default, "dark" for dark mode. Dark with no colours of its own
-    // takes the built-in dark purples. Returns false for any other text.
-    inline bool ApplyMode(const std::string& text, Scheme& scheme) {
-        std::string mode;
-        for (const char c : text) {
-            if (c != ' ' && c != '\t') {
-                mode += static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-            }
-        }
-        if (mode.empty() || mode == "light") {
-            return true;
-        }
-        if (mode != "dark") {
-            return false;
-        }
-        if (!scheme.enabled) {
-            scheme = DarkScheme();
-        }
-        scheme.dark = true;
-        return true;
-    }
-
     struct Hsv {
         float h = 0, s = 0, v = 0;
     };
@@ -150,29 +115,32 @@ namespace RR::MenuColours {
         return {a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f};
     }
 
-    // The game's own menu colour is orange (observed gradient keys run from hue 0.03 to 0.09, saturation
-    // 0.5 to 1). Light mode leaves pure red (hue 0) and yellow (0.17) alone. Dark mode also takes red and
-    // red-orange, because the game uses them for outlines and selected tabs and they would clash with a
-    // purple scheme.
-    inline bool IsMenuOrange(const Hsv& hsv, bool includeRed = false) {
-        if (hsv.s < 0.4f || hsv.v < 0.5f) {
+    // Recolours one theme colour. Greys and near-black/white are left alone, so text and backgrounds stay
+    // readable; a coloured entry takes the scheme colour at its own hue's position around the colour
+    // wheel, scaled to its original brightness. Returns true if the colour changed.
+    inline bool Remap(const Scheme& scheme, float* rgba) {
+        const Rgb in{rgba[0], rgba[1], rgba[2]};
+        const Hsv hsv = ToHsv(in);
+        if (hsv.s < 0.25f || hsv.v < 0.2f) {
             return false;
         }
-        if (includeRed && (hsv.h <= 0.13f || hsv.h >= 0.965f)) {
-            return true;
-        }
-        return hsv.h >= 0.015f && hsv.h <= 0.13f;
+        const Rgb target = AlongGradient(scheme, hsv.h);
+        const float peak = (std::max)({target.r, target.g, target.b, 0.01f});
+        const float scale = (std::min)((std::max)(hsv.v / peak, 0.3f), 1.5f);
+        rgba[0] = (std::min)(target.r * scale, 1.0f);
+        rgba[1] = (std::min)(target.g * scale, 1.0f);
+        rgba[2] = (std::min)(target.b * scale, 1.0f);
+        return true;
     }
 
-    // Light mode matches the original brightness, so a dark entry stays dark and a bright one bright. Dark
-    // mode takes the scheme colour exactly.
-    inline void Tint(const Scheme& scheme, const Rgb& target, float brightness, float* rgba) {
-        if (scheme.dark) {
-            rgba[0] = target.r;
-            rgba[1] = target.g;
-            rgba[2] = target.b;
-            return;
-        }
+    // The game's own menu colour is orange (observed gradient keys run from hue 0.03 to 0.09, saturation
+    // 0.5 to 1; pure red sits at hue 0 and yellow at 0.17, so both are excluded). Only that family is
+    // recoloured, so avatar swatches, effects and other UI keep their colours.
+    inline bool IsMenuOrange(const Hsv& hsv) {
+        return hsv.s >= 0.4f && hsv.v >= 0.5f && (hsv.h >= 0.015f && hsv.h <= 0.13f);
+    }
+
+    inline void Tint(const Rgb& target, float brightness, float* rgba) {
         const float peak = (std::max)({target.r, target.g, target.b, 0.01f});
         const float scale = (std::min)((std::max)(brightness / peak, 0.3f), 1.5f);
         rgba[0] = (std::min)(target.r * scale, 1.0f);
@@ -180,90 +148,23 @@ namespace RR::MenuColours {
         rgba[2] = (std::min)(target.b * scale, 1.0f);
     }
 
-    inline bool IsPureWhite(const float* rgba) {
-        return rgba[0] > 0.995f && rgba[1] > 0.995f && rgba[2] > 0.995f;
-    }
-
-    // Dark mode, surfaces: the game's cards, panels, buttons and backdrops are cream, peach or pale pink
-    // (light, up to a third saturated). Pure white is left alone because it is the default tint of every
-    // sprite, icon and avatar picture, and white text.
-    inline bool RemapDarkSurface(float* rgba, float minBrightness = 0.65f) {
+    // A solid menu colour takes the accent.
+    inline bool RemapSolid(const Scheme& scheme, float* rgba) {
         const Hsv hsv = ToHsv({rgba[0], rgba[1], rgba[2]});
-        if (hsv.v < minBrightness || hsv.s > 0.35f || IsPureWhite(rgba)) {
+        if (!IsMenuOrange(hsv)) {
             return false;
         }
-        rgba[0] = 0.07f;
-        rgba[1] = 0.06f;
-        rgba[2] = 0.10f;
-        return true;
-    }
-
-    // A solid menu colour takes the accent. Text on a dark surface takes a light tint of it instead, since a
-    // dark purple word on a dark purple card could not be read.
-    inline bool RemapSolid(const Scheme& scheme, float* rgba, bool text = false) {
-        const Hsv hsv = ToHsv({rgba[0], rgba[1], rgba[2]});
-        if (!IsMenuOrange(hsv, scheme.dark)) {
-            return false;
-        }
-        if (scheme.dark && text) {
-            const Rgb& a = scheme.accent;
-            rgba[0] = a.r + (1.0f - a.r) * 0.65f;
-            rgba[1] = a.g + (1.0f - a.g) * 0.65f;
-            rgba[2] = a.b + (1.0f - a.b) * 0.65f;
-            return true;
-        }
-        Tint(scheme, scheme.accent, hsv.v, rgba);
+        Tint(scheme.accent, hsv.v, rgba);
         return true;
     }
 
     // A gradient key takes the scheme gradient at its own position (0 = start, 1 = end).
     inline bool RemapGradientKey(const Scheme& scheme, float* rgba, float time) {
         const Hsv hsv = ToHsv({rgba[0], rgba[1], rgba[2]});
-        if (IsMenuOrange(hsv, scheme.dark)) {
-            Tint(scheme, AlongGradient(scheme, time), hsv.v, rgba);
-            return true;
-        }
-        // Dark mode: the home page's peach-to-cream backdrop is a gradient of light, slightly tinted keys.
-        // Gradients keep the stricter 0.8 cut-off: a white-to-light-grey gradient is a shine, not a surface.
-        return scheme.dark && RemapDarkSurface(rgba, 0.8f);
-    }
-
-    // Dark mode, text: dark, nearly grey text becomes white. Coloured and light text is left as it is.
-    inline bool RemapDarkText(float* rgba) {
-        const Hsv hsv = ToHsv({rgba[0], rgba[1], rgba[2]});
-        if (hsv.v > 0.45f || hsv.s > 0.35f) {
+        if (!IsMenuOrange(hsv)) {
             return false;
         }
-        rgba[0] = rgba[1] = rgba[2] = 1.0f;
-        return true;
-    }
-
-    // One call for every solid-colour setter. `text` is true for the text setters.
-    inline bool RemapUi(const Scheme& scheme, float* rgba, bool text) {
-        if (!scheme.enabled) {
-            return false;
-        }
-        if (RemapSolid(scheme, rgba, text)) {
-            return true;
-        }
-        if (!scheme.dark) {
-            return false;
-        }
-        return text ? RemapDarkText(rgba) : RemapDarkSurface(rgba);
-    }
-
-    // A packed Color32 vertex colour (r in the low byte). Returns true if it changed; alpha is kept.
-    inline bool RemapVertex(const Scheme& scheme, uint32_t& packed) {
-        float rgba[4] = {static_cast<float>(packed & 0xFF) / 255.0f,
-                         static_cast<float>((packed >> 8) & 0xFF) / 255.0f,
-                         static_cast<float>((packed >> 16) & 0xFF) / 255.0f, 1.0f};
-        if (!scheme.enabled || !RemapUi(scheme, rgba, false)) {
-            return false;
-        }
-        const auto byte = [](float v) {
-            return static_cast<uint32_t>((std::min)((std::max)(v, 0.0f), 1.0f) * 255.0f + 0.5f);
-        };
-        packed = (packed & 0xFF000000u) | (byte(rgba[2]) << 16) | (byte(rgba[1]) << 8) | byte(rgba[0]);
+        Tint(AlongGradient(scheme, time), hsv.v, rgba);
         return true;
     }
 
