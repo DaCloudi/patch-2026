@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <fstream>
+#include "MenuColours.h"
 #include "NetworkConfig.h"
 
 namespace RR::Config {
@@ -19,6 +20,10 @@ namespace RR::Config {
         bool dumpMetadata = false;
         // Writes 2026modules.txt and 2026methodptrs.bin: every method's native address, by assembly.
         bool dumpMethods = false;
+        // Five #rrggbb values (four gradient stops, then the accent). Empty keeps the game's colours.
+        MenuColours::Scheme menuColours;
+        // Logs each menu colour name the game looks up, with its value, once.
+        bool logMenuColours = false;
     };
 
     // Win32 INI reads return the fallback for an absent field. Empty routing
@@ -93,9 +98,16 @@ namespace RR::Config {
             !ReadFlag(path, L"EnableTracing", settings.verbose) ||
             !ReadFlag(path, L"DumpIl2Cpp", settings.dumpIl2Cpp) ||
             !ReadFlag(path, L"DumpMetadata", settings.dumpMetadata) ||
-            !ReadFlag(path, L"DumpMethods", settings.dumpMethods)) {
+            !ReadFlag(path, L"DumpMethods", settings.dumpMethods) ||
+            !ReadFlag(path, L"LogMenuColours", settings.logMenuColours)) {
             error = "DisableCertificatePinning, AllowUnsignedImages, EnableTracing and DumpIl2Cpp must be "
                     "true or false.";
+            return false;
+        }
+        std::string menuColours;
+        if (!ReadIni(path, L"MenuColours", menuColours) ||
+            !MenuColours::Parse(menuColours, settings.menuColours)) {
+            error = "MenuColours must be empty or five comma-separated #rrggbb values.";
             return false;
         }
         settings.framesPerSecond =

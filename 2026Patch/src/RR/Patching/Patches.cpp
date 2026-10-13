@@ -859,12 +859,84 @@ namespace RR::Patches {
         }
         return result == MH_OK;
     }
+
+    // ---- menu colours -------------------------------------------------------------------------------
+    // MVVMDatabinding.Theming.ColorTokenGroup resolves a theme colour token to a UnityEngine.Color (four
+    // floats) written through the out pointer. The scheme remaps coloured tokens after the game has
+    // resolved them; nothing is changed unless MenuColours is set and the value looks like a float colour.
+    static RR::MenuColours::Scheme menuScheme;
+    static bool logMenuColours = false;
+    static bool (*colourByNameOriginal)(void*, void*, float*, void*) = nullptr;
+    static bool (*colourByIdOriginal)(void*, void*, float*, void*) = nullptr;
+
+    static void MenuColourSeen(const char* kind, void* name, const float* before, const float* after) {
+        // Bounded: every distinct call site is logged at most once per name, 400 lines in all.
+        static char seen[400][64];
+        static LONG count = 0;
+        char text[64]{};
+        if (name) {
+            const int length =
+                *reinterpret_cast<int*>(reinterpret_cast<uintptr_t>(name) + RR::Offsets::String::Length);
+            const auto* chars = reinterpret_cast<const wchar_t*>(reinterpret_cast<uintptr_t>(name) +
+                                                                 RR::Offsets::String::Characters);
+            if (length > 0 && length < 60) {
+                WideCharToMultiByte(CP_UTF8, 0, chars, length, text, sizeof(text) - 1, nullptr, nullptr);
+            }
+        }
+        char key[64]{};
+        _snprintf_s(key, sizeof(key), _TRUNCATE, "%s:%s:%.2f,%.2f,%.2f", kind, text, before[0], before[1],
+                    before[2]);
+        LONG n = count;
+        for (LONG i = 0; i < n && i < 400; ++i) {
+            if (!strcmp(seen[i], key)) {
+                return;
+            }
+        }
+        if (n >= 400 || InterlockedIncrement(&count) > 400) {
+            return;
+        }
+        strcpy_s(seen[n], sizeof(seen[n]), key);
+        Log("[MenuColour] %s name=\"%s\" %.3f,%.3f,%.3f,%.3f -> %.3f,%.3f,%.3f", kind, text, before[0],
+            before[1], before[2], before[3], after[0], after[1], after[2]);
+    }
+
+    static void RemapMenuColour(const char* kind, void* name, float* colour) {
+        if (!colour || !RR::MenuColours::SaneColour(colour)) {
+            return;
+        }
+        const float before[4] = {colour[0], colour[1], colour[2], colour[3]};
+        if (menuScheme.enabled) {
+            RR::MenuColours::Remap(menuScheme, colour);
+        }
+        if (logMenuColours) {
+            MenuColourSeen(kind, name, before, colour);
+        }
+    }
+
+    static bool ColourByName(void* group, void* name, float* colour, void* method) {
+        const bool found = colourByNameOriginal(group, name, colour, method);
+        if (found) {
+            RemapMenuColour("byName", name, colour);
+        }
+        return found;
+    }
+
+    static bool ColourById(void* group, void* id, float* colour, void* method) {
+        const bool found = colourByIdOriginal(group, id, colour, method);
+        if (found) {
+            RemapMenuColour("byId", nullptr, colour);
+        }
+        return found;
+    }
+
     DWORD Initialize(const RR::Config::Settings& settings) {
         // main.cpp has validated this snapshot and the loaded fingerprints. Copy
         // configuration before resolving or enabling callbacks; initialization
         // is once per process, with no concurrent settings reload or live unload.
         networkConfig = settings.network;
         tachyonPublicKey = settings.voiceKeyXml;
+        menuScheme = settings.menuColours;
+        logMenuColours = settings.logMenuColours;
         screenShareFps = settings.framesPerSecond;
         game = reinterpret_cast<uintptr_t>(GetModuleHandleW(L"GameAssembly.dll"));
         unity = reinterpret_cast<uintptr_t>(GetModuleHandleW(L"UnityPlayer.dll"));
@@ -1059,6 +1131,16 @@ namespace RR::Patches {
                 MH_Uninitialize();
                 return 5;
             }
+        }
+        // Optional: failures here only cost the menu colours, never the rest of the patch.
+        if (menuScheme.enabled || logMenuColours) {
+            const bool byName =
+                Hook(RR::Methods::Theme::ColorTokenByName, reinterpret_cast<void*>(ColourByName),
+                     reinterpret_cast<void**>(&colourByNameOriginal), "ColorTokenGroup.ByName");
+            const bool byId = Hook(RR::Methods::Theme::ColorTokenById, reinterpret_cast<void*>(ColourById),
+                                   reinterpret_cast<void**>(&colourByIdOriginal), "ColorTokenGroup.ById");
+            Log("[MenuColour] hooks: byName=%d byId=%d scheme=%s log=%d", byName ? 1 : 0, byId ? 1 : 0,
+                menuScheme.enabled ? "on" : "off", logMenuColours ? 1 : 0);
         }
         // Zero is native behavior: do not install a refresh-rate hook at all.
         // Explicit overrides alter presets while keeping adaptive/backpressure logic.

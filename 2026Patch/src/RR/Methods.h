@@ -130,3 +130,11 @@ namespace RR::Methods::Referee {
     inline constexpr uintptr_t ObservedFault1 = 0x62BB0B;
     inline constexpr uintptr_t ObservedFault2 = 0x216D035;
 }
+
+namespace RR::Methods::Theme {
+    // MVVM-Databinding.dll, found by name through the live method table (no signatures from
+    // another build): bool TryGetColorTokenByName(this, string name, out Color color) and
+    // bool TryGetColorTokenById(this, id, out Color color), on MVVMDatabinding.Theming.ColorTokenGroup.
+    inline constexpr uintptr_t ColorTokenByName = 0x8B96270;
+    inline constexpr uintptr_t ColorTokenById = 0x8B95FB0;
+}
