@@ -398,6 +398,87 @@ namespace Il2CppDump {
         }
     }
 
+    // Fallback when no header is found: describe the large readable regions and save any that hold the
+    // metadata string table (it contains "Assembly-CSharp.dll"), so the layout can be studied offline.
+    inline bool RegionHasMarker(const unsigned char* begin, size_t length, const char* marker,
+                                size_t markerLength) {
+        __try {
+            for (size_t i = 0; i + markerLength < length; ++i) {
+                if (begin[i] == static_cast<unsigned char>(marker[0]) &&
+                    memcmp(begin + i, marker, markerLength) == 0) {
+                    return true;
+                }
+            }
+            return false;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    inline bool CountMagicGuarded(const unsigned char* begin, size_t length, int* total, int* versions) {
+        __try {
+            for (size_t i = 0; i + 8 < length; ++i) {
+                if (begin[i] == 0xAF && begin[i + 1] == 0x1B && begin[i + 2] == 0xB1 &&
+                    begin[i + 3] == 0xFA) {
+                    ++*total;
+                    int32_t version = 0;
+                    memcpy(&version, begin + i + 4, 4);
+                    if (*versions < 6) {
+                        PatchLogging::Log("[Metadata]   magic at +0x%llX version=%d",
+                                          static_cast<unsigned long long>(i), version);
+                        ++*versions;
+                    }
+                }
+            }
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    inline void DescribeRegions(const std::wstring& directory) {
+        MEMORY_BASIC_INFORMATION info{};
+        const unsigned char* cursor = nullptr;
+        int logged = 0, saved = 0;
+        while (VirtualQuery(cursor, &info, sizeof(info)) == sizeof(info)) {
+            const auto* begin = static_cast<const unsigned char*>(info.BaseAddress);
+            const bool readable =
+                info.State == MEM_COMMIT && !(info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) &&
+                (info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
+                                 PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+            if (readable && info.RegionSize >= (16u << 20) && logged < 40) {
+                ++logged;
+                int total = 0, versions = 0;
+                CountMagicGuarded(begin, info.RegionSize, &total, &versions);
+                const bool marker = RegionHasMarker(begin, info.RegionSize, "Assembly-CSharp.dll", 19);
+                unsigned char head[16]{};
+                memcpy(head, begin, 16);
+                PatchLogging::Log("[Metadata] region %p size=%llu type=0x%lX protect=0x%lX magic=%d "
+                                  "marker=%d head=%02X%02X%02X%02X%02X%02X%02X%02X",
+                                  static_cast<const void*>(begin),
+                                  static_cast<unsigned long long>(info.RegionSize), info.Type, info.Protect,
+                                  total, marker ? 1 : 0, head[0], head[1], head[2], head[3], head[4], head[5],
+                                  head[6], head[7]);
+                if (marker && saved < 2 && info.RegionSize <= (160u << 20)) {
+                    const std::wstring path =
+                        directory + L"\\2026metadata-region" + std::to_wstring(saved) + L".bin";
+                    if (FILE* out = _wfsopen(path.c_str(), L"wb", _SH_DENYNO)) {
+                        const bool ok = WriteGuarded(out, begin, info.RegionSize);
+                        fclose(out);
+                        PatchLogging::Log("[Metadata]   saved region to %d (%s)", saved,
+                                          ok ? "ok" : "failed");
+                    }
+                    ++saved;
+                }
+            }
+            cursor = begin + info.RegionSize;
+            if (cursor <= begin) {
+                break;
+            }
+        }
+        PatchLogging::Log("[Metadata] region survey done (%d large regions listed, %d saved)", logged, saved);
+    }
+
     inline void DumpMetadata(const std::wstring& directory) {
         MetadataHit hits[8];
         int count = 0;
@@ -418,7 +499,8 @@ namespace Il2CppDump {
             }
         }
         if (!count) {
-            PatchLogging::Log("[Metadata] no metadata header found in memory");
+            PatchLogging::Log("[Metadata] no metadata header found in memory; surveying large regions");
+            DescribeRegions(directory);
             return;
         }
         for (int i = 0; i < count; ++i) {
