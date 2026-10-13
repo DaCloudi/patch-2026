@@ -189,7 +189,7 @@ namespace RR::MenuColours {
     // sprite, icon and avatar picture, and white text.
     inline bool RemapDarkSurface(float* rgba) {
         const Hsv hsv = ToHsv({rgba[0], rgba[1], rgba[2]});
-        if (hsv.v < 0.8f || hsv.s > 0.35f || IsPureWhite(rgba)) {
+        if (hsv.v < 0.65f || hsv.s > 0.35f || IsPureWhite(rgba)) {
             return false;
         }
         rgba[0] = 0.07f;
