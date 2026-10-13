@@ -83,10 +83,10 @@ namespace RR::MenuColours {
         return true;
     }
 
-    // The built-in dark scheme, used when MenuMode=dark and no MenuColours are given.
+    // The built-in dark scheme (muted purples), used when MenuMode=dark and no MenuColours are given.
     inline Scheme DarkScheme() {
         Scheme scheme;
-        Parse("#2d0f5c,#3b1578,#4a1c94,#5a24b0,#4a1c94", scheme);
+        Parse("#383050,#41385c,#4b4168,#554a74,#4b4168", scheme);
         scheme.dark = true;
         return scheme;
     }
@@ -250,6 +250,21 @@ namespace RR::MenuColours {
             return false;
         }
         return text ? RemapDarkText(rgba) : RemapDarkSurface(rgba);
+    }
+
+    // A packed Color32 vertex colour (r in the low byte). Returns true if it changed; alpha is kept.
+    inline bool RemapVertex(const Scheme& scheme, uint32_t& packed) {
+        float rgba[4] = {static_cast<float>(packed & 0xFF) / 255.0f,
+                         static_cast<float>((packed >> 8) & 0xFF) / 255.0f,
+                         static_cast<float>((packed >> 16) & 0xFF) / 255.0f, 1.0f};
+        if (!scheme.enabled || !RemapUi(scheme, rgba, false)) {
+            return false;
+        }
+        const auto byte = [](float v) {
+            return static_cast<uint32_t>((std::min)((std::max)(v, 0.0f), 1.0f) * 255.0f + 0.5f);
+        };
+        packed = (packed & 0xFF000000u) | (byte(rgba[2]) << 16) | (byte(rgba[1]) << 8) | byte(rgba[0]);
+        return true;
     }
 
     // A value that really is a float colour component. Guards against reading a different struct.
