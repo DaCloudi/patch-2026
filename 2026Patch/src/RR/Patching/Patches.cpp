@@ -867,6 +867,37 @@ namespace RR::Patches {
     // the ini; every other colour is left as the game set it.
     static RR::MenuColours::Scheme menuScheme;
     static bool logMenuColours = false;
+    // Diagnostic (LogMenuColours=true): after remapping, list light colours that are still light and not pure
+    // white, so surfaces the patch missed show up in the log with the setter that carried them.
+    static void NoteLeftover(const char* where, const float* colour) {
+        if (!logMenuColours || !menuScheme.dark) {
+            return;
+        }
+        const float high = (std::max)({colour[0], colour[1], colour[2]});
+        const float low = (std::min)({colour[0], colour[1], colour[2]});
+        if (high < 0.7f || (colour[0] > 0.995f && colour[1] > 0.995f && colour[2] > 0.995f)) {
+            return;
+        }
+        static unsigned seen[96] = {};
+        static LONG count = 0;
+        const unsigned hash = (static_cast<unsigned>(colour[0] * 255.0f) << 16) ^
+                              (static_cast<unsigned>(colour[1] * 255.0f) << 8) ^
+                              static_cast<unsigned>(colour[2] * 255.0f) ^
+                              (static_cast<unsigned>(where[0]) << 24);
+        const LONG n = count;
+        for (LONG i = 0; i < n && i < 96; ++i) {
+            if (seen[i] == hash) {
+                return;
+            }
+        }
+        if (n >= 96 || InterlockedIncrement(&count) > 96) {
+            return;
+        }
+        seen[n] = hash;
+        Log("[Leftover] %s %.3f %.3f %.3f (saturation %.2f)", where, colour[0], colour[1], colour[2],
+            high > 0 ? (high - low) / high : 0.0f);
+    }
+
     // Remaps the colour keys of a managed GradientColorKey[] in place. Layout: length at +0x18, elements from
     // +0x20, each a Color (four floats) and a float time. No objects with destructors, so the SEH block is
     // allowed here.
@@ -883,6 +914,7 @@ namespace RR::Patches {
                 auto* key = reinterpret_cast<float*>(array + 0x20 + 20 * i);
                 if (RR::MenuColours::SaneColour(key) && key[4] >= 0.0f && key[4] <= 1.0001f) {
                     RR::MenuColours::RemapGradientKey(menuScheme, key, key[4]);
+                    NoteLeftover("Gradient", key);
                 }
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -909,6 +941,7 @@ namespace RR::Patches {
     template <size_t I> static void ColourSetter(void* self, float* colour, void* method) {
         if (menuScheme.enabled && colour && RR::MenuColours::SaneColour(colour)) {
             RR::MenuColours::RemapUi(menuScheme, colour, colourSetterTargets[I].text);
+            NoteLeftover(colourSetterTargets[I].name, colour);
         }
         colourSetterOriginal[I](self, colour, method);
     }
@@ -933,6 +966,7 @@ namespace RR::Patches {
                 float* colour = block + 4 * i;
                 if (RR::MenuColours::SaneColour(colour)) {
                     RR::MenuColours::RemapUi(menuScheme, colour, false);
+                    NoteLeftover("Selectable.colors", colour);
                 }
             }
         }

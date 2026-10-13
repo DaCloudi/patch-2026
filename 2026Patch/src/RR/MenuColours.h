@@ -151,9 +151,17 @@ namespace RR::MenuColours {
     }
 
     // The game's own menu colour is orange (observed gradient keys run from hue 0.03 to 0.09, saturation
-    // 0.5 to 1; pure red sits at hue 0 and yellow at 0.17, so both are excluded).
-    inline bool IsMenuOrange(const Hsv& hsv) {
-        return hsv.s >= 0.4f && hsv.v >= 0.5f && (hsv.h >= 0.015f && hsv.h <= 0.13f);
+    // 0.5 to 1). Light mode leaves pure red (hue 0) and yellow (0.17) alone. Dark mode also takes red and
+    // red-orange, because the game uses them for outlines and selected tabs and they would clash with a
+    // purple scheme.
+    inline bool IsMenuOrange(const Hsv& hsv, bool includeRed = false) {
+        if (hsv.s < 0.4f || hsv.v < 0.5f) {
+            return false;
+        }
+        if (includeRed && (hsv.h <= 0.13f || hsv.h >= 0.965f)) {
+            return true;
+        }
+        return hsv.h >= 0.015f && hsv.h <= 0.13f;
     }
 
     // Light mode matches the original brightness, so a dark entry stays dark and a bright one bright. Dark
@@ -172,11 +180,29 @@ namespace RR::MenuColours {
         rgba[2] = (std::min)(target.b * scale, 1.0f);
     }
 
+    inline bool IsPureWhite(const float* rgba) {
+        return rgba[0] > 0.995f && rgba[1] > 0.995f && rgba[2] > 0.995f;
+    }
+
+    // Dark mode, surfaces: the game's cards, panels, buttons and backdrops are cream, peach or pale pink
+    // (light, up to a third saturated). Pure white is left alone because it is the default tint of every
+    // sprite, icon and avatar picture, and white text.
+    inline bool RemapDarkSurface(float* rgba) {
+        const Hsv hsv = ToHsv({rgba[0], rgba[1], rgba[2]});
+        if (hsv.v < 0.8f || hsv.s > 0.35f || IsPureWhite(rgba)) {
+            return false;
+        }
+        rgba[0] = 0.07f;
+        rgba[1] = 0.06f;
+        rgba[2] = 0.10f;
+        return true;
+    }
+
     // A solid menu colour takes the accent. Text on a dark surface takes a light tint of it instead, since a
     // dark purple word on a dark purple card could not be read.
     inline bool RemapSolid(const Scheme& scheme, float* rgba, bool text = false) {
         const Hsv hsv = ToHsv({rgba[0], rgba[1], rgba[2]});
-        if (!IsMenuOrange(hsv)) {
+        if (!IsMenuOrange(hsv, scheme.dark)) {
             return false;
         }
         if (scheme.dark && text) {
@@ -193,29 +219,12 @@ namespace RR::MenuColours {
     // A gradient key takes the scheme gradient at its own position (0 = start, 1 = end).
     inline bool RemapGradientKey(const Scheme& scheme, float* rgba, float time) {
         const Hsv hsv = ToHsv({rgba[0], rgba[1], rgba[2]});
-        if (!IsMenuOrange(hsv)) {
-            return false;
+        if (IsMenuOrange(hsv, scheme.dark)) {
+            Tint(scheme, AlongGradient(scheme, time), hsv.v, rgba);
+            return true;
         }
-        Tint(scheme, AlongGradient(scheme, time), hsv.v, rgba);
-        return true;
-    }
-
-    inline bool IsPureWhite(const float* rgba) {
-        return rgba[0] > 0.995f && rgba[1] > 0.995f && rgba[2] > 0.995f;
-    }
-
-    // Dark mode, surfaces: the game's cards, panels and buttons are cream or pale pink (light, a little
-    // tinted). Pure white is left alone because it is the default tint of every sprite, icon and avatar
-    // picture, and white text.
-    inline bool RemapDarkSurface(float* rgba) {
-        const Hsv hsv = ToHsv({rgba[0], rgba[1], rgba[2]});
-        if (hsv.v < 0.8f || hsv.s > 0.2f || IsPureWhite(rgba)) {
-            return false;
-        }
-        rgba[0] = 0.07f;
-        rgba[1] = 0.06f;
-        rgba[2] = 0.10f;
-        return true;
+        // Dark mode: the home page's peach-to-cream backdrop is a gradient of light, slightly tinted keys.
+        return scheme.dark && RemapDarkSurface(rgba);
     }
 
     // Dark mode, text: dark, nearly grey text becomes white. Coloured and light text is left as it is.
