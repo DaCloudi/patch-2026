@@ -147,4 +147,8 @@ namespace RR::Methods::Gradients {
     inline constexpr uintptr_t TextSetFaceColor = 0xB2B5ED0;
     inline constexpr uintptr_t TextSetOutlineColor = 0xB2B6A70;
     inline constexpr uintptr_t SelectableSetColors = 0xB7E6AA0;
+    // UnityEngine.UI.VertexHelper.AddVert(Vector3 position, Color32 color, Vector4 uv0): every uGUI Image
+    // and RawImage quad passes its vertex colour through here, whatever set it, including colours that live
+    // only in a prefab and are never set through a call. The Color32 arrives packed in the third register.
+    inline constexpr uintptr_t VertexAddVert = 0xB803770;
 }
