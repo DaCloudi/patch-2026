@@ -139,6 +139,12 @@ namespace RR::Methods::Gradients {
     inline constexpr uintptr_t SetColorKeys = 0xB3EE900;
     inline constexpr uintptr_t PaletteForeground = 0xA47B6D0;
     inline constexpr uintptr_t PaletteBackground = 0xA47B2B0;
-    // UnityEngine.UI.Graphic.set_color(this, Color): the final step for solid UI colours.
+    // Solid UI colours. Each takes (this, Color) with the Color passed by pointer; Selectable.set_colors
+    // takes a ColorBlock (five Colors, then multiplier and fade duration) the same way.
     inline constexpr uintptr_t GraphicSetColor = 0xB5B9150;
+    inline constexpr uintptr_t CanvasRendererSetColor = 0xB7BAA20;
+    inline constexpr uintptr_t TextSetColor = 0xB2B5B90;
+    inline constexpr uintptr_t TextSetFaceColor = 0xB2B5ED0;
+    inline constexpr uintptr_t TextSetOutlineColor = 0xB2B6A70;
+    inline constexpr uintptr_t SelectableSetColors = 0xB7E6AA0;
 }
